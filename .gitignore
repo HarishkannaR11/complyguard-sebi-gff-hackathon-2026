@@ -39,3 +39,15 @@ venv/
 
 # Generated data
 data/processed/
+
+# Local Node.js binary
+.node/
+
+# Local databases
+regops.db
+qdrant_db/
+
+# Temporary downloads / raw PDFs
+glow.tar.gz
+data/raw_pdfs/*
+!data/raw_pdfs/.gitkeep

@@ -9,7 +9,17 @@ DEFAULT_COLLECTION = "circular_clauses"
 
 
 def get_client(url: str | None = None) -> QdrantClient:
-    return QdrantClient(url=url or os.environ.get("QDRANT_URL", "http://localhost:6333"))
+    q_url = url or os.environ.get("QDRANT_URL", "http://localhost:6333")
+    if q_url.startswith("http://localhost") or q_url.startswith("http://127.0.0.1") or not q_url:
+        try:
+            client = QdrantClient(url=q_url, timeout=2.0)
+            client.get_collections()
+            return client
+        except Exception:
+            return QdrantClient(path="./qdrant_db")
+    elif q_url.startswith("/") or q_url.startswith("./") or q_url == ":memory:":
+        return QdrantClient(path=q_url) if q_url != ":memory:" else QdrantClient(location=":memory:")
+    return QdrantClient(url=q_url)
 
 
 def ensure_collection(

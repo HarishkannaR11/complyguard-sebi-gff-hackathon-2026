@@ -11,6 +11,7 @@ class Obligation(Base):
     frequency = Column(String)
     evidence_type = Column(String)
     deadline_rule = Column(String)
+    intermediary = Column(String, default="stockbroker")
     status = Column(String, default="active")
 
 class Task(Base):

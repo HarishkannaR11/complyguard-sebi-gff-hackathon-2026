@@ -52,7 +52,7 @@ def health_check():
 
 
 @app.post("/upload")
-async def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db)):
+def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db)):
     os.makedirs("data/raw_pdfs", exist_ok=True)
     file_path = f"data/raw_pdfs/{file.filename}"
     with open(file_path, "wb") as buffer:
@@ -94,8 +94,17 @@ async def upload_circular(file: UploadFile = File(...), db: Session = Depends(ge
         }
         config = {"configurable": {"thread_id": f"{circular_id}:{clause_id}"}}
 
+        from langgraph.errors import GraphInterrupt
         try:
             result = graph.invoke(state, config=config)
+        except GraphInterrupt as exc:
+            state_val = graph.get_state(config).values
+            similarity_match = state_val.get("similarity_match") or {}
+            obligation_id = (similarity_match.get("payload") or {}).get("obligation_id")
+            if obligation_id:
+                matched_obligation_ids.add(obligation_id)
+            results.append({"clause_id": clause_id, "status": "pending_review"})
+            continue
         except Exception as exc:
             results.append({"clause_id": clause_id, "status": "error", "detail": str(exc)})
             continue
@@ -152,6 +161,79 @@ async def upload_circular(file: UploadFile = File(...), db: Session = Depends(ge
     }
 
 
+@app.post("/import/obligations")
+def import_obligations_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    import csv
+    import io
+    import datetime
+    
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported")
+    
+    try:
+        contents = file.file.read().decode("utf-8-sig")
+        csv_file = io.StringIO(contents)
+        reader = csv.DictReader(csv_file)
+        
+        imported_count = 0
+        for row in reader:
+            requirement = row.get("requirement", "").strip()
+            if not requirement:
+                continue
+                
+            freq = row.get("frequency", "one-time").strip()
+            evidence = row.get("evidence_type", "").strip()
+            deadline_rule = row.get("deadline_rule", "").strip() or None
+            intermediary = row.get("intermediary", "stockbroker").strip() or "stockbroker"
+            
+            # Create obligation
+            ob_id = str(uuid.uuid4())
+            obligation = Obligation(
+                id=ob_id,
+                clause_id=f"csv-import-{ob_id[:8]}",
+                requirement=requirement,
+                frequency=freq,
+                evidence_type=evidence,
+                deadline_rule=deadline_rule,
+                intermediary=intermediary,
+                status="active"
+            )
+            db.add(obligation)
+            db.flush()
+            
+            # Create task
+            owner = row.get("owner", "compliance").strip() or "compliance"
+            due_date_str = row.get("due_date", "").strip()
+            task_due_date = None
+            if due_date_str:
+                try:
+                    task_due_date = datetime.datetime.fromisoformat(due_date_str)
+                except ValueError:
+                    pass
+            
+            if not task_due_date and deadline_rule:
+                from app.graph.nodes import resolve_due_date
+                due_date_val = resolve_due_date(deadline_rule, datetime.date.today())
+                if due_date_val:
+                    task_due_date = datetime.datetime.combine(due_date_val, datetime.datetime.min.time())
+            
+            task = Task(
+                id=str(uuid.uuid4()),
+                obligation_id=ob_id,
+                owner=owner,
+                due_date=task_due_date,
+                status="open"
+            )
+            db.add(task)
+            imported_count += 1
+            
+        db.commit()
+        return {"status": "success", "imported": imported_count}
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=f"CSV processing failed: {str(exc)}")
+
+
 @app.get("/gaps")
 def list_gaps(db: Session = Depends(get_db)):
     try:
@@ -174,7 +256,7 @@ def list_obligations(db: Session = Depends(get_db)):
             "id": ob.id,
             "circular_name": (source or {}).get("circular_id"),
             "obligation_text": ob.requirement,
-            "intermediary": None,
+            "intermediary": ob.intermediary,
             "deadline": task.due_date.date().isoformat() if task and task.due_date else None,
             "evidence_type": ob.evidence_type,
             "source_chunk": (source or {}).get("text"),

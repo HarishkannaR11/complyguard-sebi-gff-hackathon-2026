@@ -17,10 +17,18 @@ def _get_checkpointer():
         conn_string = os.environ.get(
             "DATABASE_URL", "postgresql://regops:regops@localhost:5433/regops"
         )
-        _checkpointer = _exit_stack.enter_context(
-            PostgresSaver.from_conn_string(conn_string)
-        )
-        _checkpointer.setup()
+        if conn_string.startswith("sqlite"):
+            from langgraph.checkpoint.memory import MemorySaver
+            _checkpointer = MemorySaver()
+        else:
+            try:
+                _checkpointer = _exit_stack.enter_context(
+                    PostgresSaver.from_conn_string(conn_string)
+                )
+                _checkpointer.setup()
+            except Exception:
+                from langgraph.checkpoint.memory import MemorySaver
+                _checkpointer = MemorySaver()
     return _checkpointer
 
 

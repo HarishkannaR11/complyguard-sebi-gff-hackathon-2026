@@ -11,7 +11,10 @@ DEFAULT_DATABASE_URL = "postgresql://regops:regops@localhost:5433/regops"
 
 def make_engine(database_url: str | None = None):
     url = database_url or os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
-    return create_engine(url)
+    connect_args = {}
+    if url.startswith("sqlite"):
+        connect_args = {"check_same_thread": False}
+    return create_engine(url, connect_args=connect_args)
 
 
 engine = make_engine()

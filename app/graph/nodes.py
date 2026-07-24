@@ -7,9 +7,32 @@ from datetime import datetime as dt_datetime
 
 import os
 import time
+import threading
+import re
 
 from groq import APIConnectionError, Groq
 from langgraph.types import interrupt
+
+_audit_lock = threading.Lock()
+
+
+def parse_json_robust(content: str) -> dict:
+    content = content.replace("```json", "").replace("```", "").strip()
+    start_idx = content.find("{")
+    end_idx = content.rfind("}") + 1
+    if start_idx == -1 or end_idx == 0:
+        raise ValueError(f"No JSON object found in response: {content}")
+    
+    raw_json = content[start_idx:end_idx]
+    try:
+        return json.loads(raw_json)
+    except json.JSONDecodeError:
+        # Fallback: remove trailing commas before closing braces/brackets
+        fixed_json = re.sub(r',\s*([\]}])', r'\1', raw_json)
+        try:
+            return json.loads(fixed_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to decode LLM JSON: {raw_json}. Error: {str(e)}")
 
 from app.db.database import SessionLocal
 from app.db.models import AuditTrail, EvidenceLog, Obligation, Task
@@ -102,10 +125,7 @@ def extractor_node(state: ComplianceState) -> dict:
             time.sleep(1.5 * (attempt + 1))
 
     content = response.choices[0].message.content
-    content = content.replace("```json", "").replace("```", "").strip()
-    start_idx = content.find("{")
-    end_idx = content.rfind("}") + 1
-    obligation = json.loads(content[start_idx:end_idx])
+    obligation = parse_json_robust(content)
     return {"extracted_obligation": obligation}
 
 
@@ -233,33 +253,28 @@ def gap_engine_node(state: ComplianceState) -> dict:
 
 
 def _write_audit_entry(thread_id: str, node_name: str, action: dict, actor: str) -> None:
-    # KNOWN LIMITATION: this read-latest-hash-then-commit sequence is not
-    # concurrency-safe. Two writers calling this at the same time (e.g. two
-    # reviewers resuming different paused threads simultaneously) can both
-    # read the same "latest" row, compute the same prev_hash, and commit —
-    # forking the chain and defeating tamper-evidence. Safe for sequential
-    # use (a single run_diff loop, one request at a time); a real fix needs
-    # row-level locking (e.g. SELECT ... FOR UPDATE on the tail row) or a
-    # single serialized writer, deliberately not implemented here.
-    db = SessionLocal()
-    try:
-        last = db.query(AuditTrail).order_by(AuditTrail.timestamp.desc()).first()
-        prev_hash = last.hash if last else ""
-        timestamp = dt_datetime.utcnow()
-        entry_hash = compute_audit_hash(prev_hash, action, timestamp)
-        db.add(AuditTrail(
-            id=str(uuid.uuid4()),
-            thread_id=thread_id,
-            node_name=node_name,
-            action=action,
-            actor=actor,
-            timestamp=timestamp,
-            prev_hash=prev_hash,
-            hash=entry_hash,
-        ))
-        db.commit()
-    finally:
-        db.close()
+    # Thread-safe lock at the process level and SELECT FOR UPDATE at the DB level
+    # to protect the hash chain from fork splits under concurrent writers.
+    with _audit_lock:
+        db = SessionLocal()
+        try:
+            last = db.query(AuditTrail).order_by(AuditTrail.timestamp.desc()).with_for_update().first()
+            prev_hash = last.hash if last else ""
+            timestamp = dt_datetime.utcnow()
+            entry_hash = compute_audit_hash(prev_hash, action, timestamp)
+            db.add(AuditTrail(
+                id=str(uuid.uuid4()),
+                thread_id=thread_id,
+                node_name=node_name,
+                action=action,
+                actor=actor,
+                timestamp=timestamp,
+                prev_hash=prev_hash,
+                hash=entry_hash,
+            ))
+            db.commit()
+        finally:
+            db.close()
 
 
 def human_review_node(state: ComplianceState) -> dict:

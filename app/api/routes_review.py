@@ -33,8 +33,14 @@ def submit_decision(thread_id: str, decision: str, actor: str = "reviewer"):
             detail=f"No pending review for thread '{thread_id}' — nothing is paused.",
         )
 
-    result = graph.invoke(
-        Command(resume={"decision": decision, "actor": actor}),
-        config=config,
-    )
+    from langgraph.errors import GraphInterrupt
+    try:
+        result = graph.invoke(
+            Command(resume={"decision": decision, "actor": actor}),
+            config=config,
+        )
+    except GraphInterrupt as exc:
+        state_val = graph.get_state(config).values
+        return {"status": "resumed_pending", "state": state_val}
+        
     return {"status": "resumed", "state": result}

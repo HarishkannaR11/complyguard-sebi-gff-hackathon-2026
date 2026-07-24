@@ -1,6 +1,24 @@
 import { useState } from "react";
 import StatusBadge from "../shared/StatusBadge";
 
+const INTERMEDIARY_COLORS = {
+  stockbroker: "bg-blue-50 text-blue-700 border-blue-200",
+  depository: "bg-cyan-50 text-cyan-700 border-cyan-200",
+  asset_management_company: "bg-amber-50 text-amber-700 border-amber-200",
+  registrar_and_transfer_agent: "bg-teal-50 text-teal-700 border-teal-200",
+  investment_adviser: "bg-purple-50 text-purple-700 border-purple-200",
+  market_infrastructure_institution: "bg-rose-50 text-rose-700 border-rose-200",
+};
+
+const INTERMEDIARY_LABELS = {
+  stockbroker: "Stock Broker",
+  depository: "Depository",
+  asset_management_company: "Asset Management Company (AMC)",
+  registrar_and_transfer_agent: "RTA",
+  investment_adviser: "Investment Adviser (IA)",
+  market_infrastructure_institution: "Market Infrastructure Institution (MII)",
+};
+
 export default function ObligationList({ obligations, evidence, onAttachEvidence }) {
   const [expandedId, setExpandedId] = useState(null);
   const [evidenceForId, setEvidenceForId] = useState(null);
@@ -24,11 +42,8 @@ export default function ObligationList({ obligations, evidence, onAttachEvidence
         </p>
       </div>
       <p className="mt-2 text-sm text-neutral-500">
-        Extracted for intermediary:{" "}
-        <span className="font-medium text-neutral-700">
-          {obligations[0]?.intermediary || "N/A"}
-        </span>.
-        Click a row to see the exact source text it was extracted from.
+        Extracted compliance obligations checklist across securities market intermediaries.
+        Click a row to see the exact source text and attach fulfillment evidence.
       </p>
 
       <div className="mt-6 space-y-4">
@@ -48,6 +63,13 @@ export default function ObligationList({ obligations, evidence, onAttachEvidence
               </button>
 
               <div className="mt-3 flex flex-wrap items-center gap-2">
+                {ob.intermediary && (
+                  <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 font-mono text-[10px] font-semibold ${
+                    INTERMEDIARY_COLORS[ob.intermediary] || "bg-neutral-50 text-neutral-600 border-neutral-200"
+                  }`}>
+                    🏢 {INTERMEDIARY_LABELS[ob.intermediary] || ob.intermediary}
+                  </span>
+                )}
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-50 px-2.5 py-1 font-mono text-[11px] font-medium text-violet-700">
                   {ob.evidenceType}
                 </span>
@@ -112,12 +134,22 @@ export default function ObligationList({ obligations, evidence, onAttachEvidence
                       </div>
                     </div>
                   ) : (
-                    <button
-                      onClick={() => setEvidenceForId(ob.id)}
-                      className="rounded-full border border-neutral-200 px-4 py-2 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
-                    >
-                      + Attach evidence
-                    </button>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => setEvidenceForId(ob.id)}
+                        className="rounded-full border border-neutral-200 px-4 py-2 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
+                      >
+                        + Attach evidence
+                      </button>
+                      {ob.status !== "met" && (
+                        <button
+                          onClick={() => onAttachEvidence(ob.id, "Verified and marked as compliant by compliance officer")}
+                          className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-600"
+                        >
+                          ✓ Mark as Met
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               )}

@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { CIRCULAR } from "../../data/mockData";
-import { uploadCircular } from "../../api";
+import { uploadCircular, importObligationsCsv, submitReviewDecision } from "../../api";
 
 const PROCESSING_STEPS = [
   "Parsing PDF text...",
@@ -15,15 +15,66 @@ export default function UploadCircular({ onComplete }) {
   const [processing, setProcessing] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [showSampleNotice, setShowSampleNotice] = useState(false);
+  const [pendingReviews, setPendingReviews] = useState([]);
   const timeouts = useRef([]);
+
+  async function handleCsvUpload(file) {
+    if (!file) return;
+    setFileName(file.name);
+    setProcessing(true);
+    setStepIndex(3);
+    try {
+      const res = await importObligationsCsv(file);
+      alert(`Successfully imported ${res.imported} obligations from CSV!`);
+      onComplete();
+    } catch (e) {
+      console.error(e);
+      alert("Failed to import CSV. Make sure it is a valid formatted CSV.");
+      setProcessing(false);
+    }
+  }
+
+  const updatePendingField = (threadId, field, value) => {
+    setPendingReviews(prev => prev.map(p => {
+      if (p.threadId === threadId) {
+        return { ...p, [field]: value };
+      }
+      return p;
+    }));
+  };
+
+  async function handleAction(threadId, actionType, itemData = null) {
+    let decision = actionType;
+    if (actionType === "amend" && itemData) {
+      const payload = {
+        requirement: itemData.requirement,
+        frequency: itemData.frequency,
+        evidence_type: itemData.evidenceType,
+        deadline_rule: itemData.deadlineRule,
+      };
+      decision = "amend:" + JSON.stringify(payload);
+    }
+    
+    try {
+      await submitReviewDecision(threadId, decision);
+      const remaining = pendingReviews.filter(p => p.threadId !== threadId);
+      setPendingReviews(remaining);
+      if (remaining.length === 0) {
+        onComplete();
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Failed to submit review decision. Make sure the backend is running.");
+    }
+  }
 
   async function startProcessing(file, fallbackName = null) {
     setShowSampleNotice(false);
     setFileName(file ? file.name : fallbackName);
     setProcessing(true);
     setStepIndex(0);
+    setPendingReviews([]);
     
-    // Animate UI steps roughly matching the processing
     PROCESSING_STEPS.forEach((_, i) => {
       const t = setTimeout(() => setStepIndex(i), (i + 1) * 800);
       timeouts.current.push(t);
@@ -31,8 +82,25 @@ export default function UploadCircular({ onComplete }) {
 
     try {
       const fileToUpload = file || (await fetchSampleFile());
-      await uploadCircular(fileToUpload);
-      onComplete();
+      const data = await uploadCircular(fileToUpload);
+      
+      const pending = data.results.filter(r => r.status === "pending_review");
+      if (pending && pending.length > 0) {
+        timeouts.current.forEach(t => clearTimeout(t));
+        setProcessing(false);
+        setPendingReviews(pending.map(p => ({
+          threadId: p.thread_id,
+          clauseId: p.clause_id,
+          clauseText: p.clause_text,
+          diffStatus: p.diff_status,
+          requirement: p.extracted_obligation?.requirement || "",
+          frequency: p.extracted_obligation?.frequency || "one-time",
+          evidenceType: p.extracted_obligation?.evidence_type || "",
+          deadlineRule: p.extracted_obligation?.deadline_rule || "",
+        })));
+      } else {
+        onComplete();
+      }
     } catch (e) {
       console.error(e);
       alert("Failed to process circular. Make sure the backend is running.");
@@ -62,7 +130,135 @@ export default function UploadCircular({ onComplete }) {
     if (e.target.files?.[0]) {
       startProcessing(e.target.files[0]);
     }
-    e.target.value = "";
+  }
+
+  if (pendingReviews.length > 0) {
+    return (
+      <div className="flex-1">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-50">
+            <span className="text-xl font-bold text-amber-700">⚖️</span>
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight text-neutral-900">
+              Human-in-the-Loop Review
+            </h2>
+            <p className="text-sm text-neutral-500 mt-0.5">
+              {pendingReviews.length} circular clause(s) require compliance translation approval.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-8 space-y-8">
+          {pendingReviews.map((item) => (
+            <div key={item.threadId} className="rounded-2xl border border-neutral-200 p-6 bg-white shadow-sm">
+              <div className="flex items-baseline justify-between gap-4">
+                <span className="font-mono text-xs font-semibold tracking-wider text-amber-700 uppercase bg-amber-50 px-2.5 py-1 rounded-full border border-amber-100">
+                  {item.diffStatus === "amended" ? "⚠️ Amended Clause (Matches existing task)" : "📝 New Obligation"}
+                </span>
+                <span className="font-mono text-[10px] text-neutral-400">
+                  Thread ID: {item.threadId}
+                </span>
+              </div>
+
+              <div className="mt-4 rounded-xl bg-neutral-50 p-4 border border-neutral-100">
+                <p className="font-mono text-[11px] font-medium tracking-wide text-neutral-400">
+                  SEBI CIRCULAR CLAUSE TEXT
+                </p>
+                <p className="mt-1.5 text-sm italic leading-relaxed text-neutral-600">
+                  {item.clauseText}
+                </p>
+              </div>
+
+              <div className="mt-6 space-y-4">
+                <p className="font-mono text-[11px] font-medium tracking-wide text-neutral-400">
+                  TRANSLATED REGULATORY RULES (EDITABLE)
+                </p>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-600 mb-1">
+                      Compliance Obligation Requirement
+                    </label>
+                    <textarea
+                      value={item.requirement}
+                      onChange={(e) => updatePendingField(item.threadId, "requirement", e.target.value)}
+                      className="w-full rounded-xl border border-neutral-200 p-3 text-sm text-neutral-900 outline-none focus:border-violet-400"
+                      rows={3}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-neutral-600 mb-1">
+                        Frequency
+                      </label>
+                      <select
+                        value={item.frequency}
+                        onChange={(e) => updatePendingField(item.threadId, "frequency", e.target.value)}
+                        className="w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm text-neutral-900 outline-none focus:border-violet-400 bg-white"
+                      >
+                        <option value="daily">Daily</option>
+                        <option value="monthly">Monthly</option>
+                        <option value="quarterly">Quarterly</option>
+                        <option value="half-yearly">Half-Yearly</option>
+                        <option value="annual">Annual</option>
+                        <option value="one-time">One-Time</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-neutral-600 mb-1">
+                        Evidence Required
+                      </label>
+                      <input
+                        type="text"
+                        value={item.evidenceType}
+                        onChange={(e) => updatePendingField(item.threadId, "evidenceType", e.target.value)}
+                        className="w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm text-neutral-900 outline-none focus:border-violet-400"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-neutral-600 mb-1">
+                        Deadline Rule (Days / Recurrence)
+                      </label>
+                      <input
+                        type="text"
+                        value={item.deadlineRule}
+                        onChange={(e) => updatePendingField(item.threadId, "deadlineRule", e.target.value)}
+                        className="w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm text-neutral-900 outline-none focus:border-violet-400"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex flex-wrap gap-3 border-t border-neutral-100 pt-4">
+                <button
+                  onClick={() => handleAction(item.threadId, "approve")}
+                  className="rounded-full bg-emerald-500 px-6 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-600"
+                >
+                  ✓ Approve Translation
+                </button>
+                <button
+                  onClick={() => handleAction(item.threadId, "amend", item)}
+                  className="rounded-full bg-violet-600 px-6 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-violet-700"
+                >
+                  Save & Apply Amendments
+                </button>
+                <button
+                  onClick={() => handleAction(item.threadId, "reject")}
+                  className="rounded-full border border-neutral-200 bg-white px-6 py-2.5 text-xs font-semibold text-neutral-600 transition-colors hover:bg-neutral-50"
+                >
+                  ✗ Discard Requirement
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -118,6 +314,26 @@ export default function UploadCircular({ onComplete }) {
                 You can now upload a real PDF and the backend will process it.
               </p>
             )}
+          </div>
+
+          <div
+            className="mt-6 flex flex-col items-center justify-center rounded-2xl border border-dashed border-emerald-300 bg-emerald-50/10 px-6 py-6 text-center"
+          >
+            <p className="text-sm font-semibold text-neutral-800">
+              📊 Have existing company data?
+            </p>
+            <p className="mt-1 text-xs text-neutral-500 max-w-md">
+              Upload a CSV file containing <code>requirement, frequency, evidence_type, deadline_rule, owner, due_date</code> columns to instantly import obligations.
+            </p>
+            <label className="mt-4 cursor-pointer rounded-full bg-emerald-500 px-6 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-600">
+              Select Company CSV
+              <input type="file" accept=".csv" className="hidden" onChange={(e) => {
+                if (e.target.files?.[0]) {
+                  handleCsvUpload(e.target.files[0]);
+                }
+                e.target.value = "";
+              }} />
+            </label>
           </div>
         </>
       )}

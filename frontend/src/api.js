@@ -12,6 +12,18 @@ export const uploadCircular = async (file) => {
     return response.json();
 };
 
+export const importObligationsCsv = async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    const response = await fetch(`${API_URL}/import/obligations`, {
+        method: 'POST',
+        body: formData,
+    });
+    if (!response.ok) throw new Error('Failed to import CSV obligations');
+    return response.json();
+};
+
 export const getObligations = async () => {
     const response = await fetch(`${API_URL}/obligations`);
     if (!response.ok) throw new Error('Failed to fetch obligations');
@@ -48,5 +60,14 @@ export const addEvidence = async (obligationId, description) => {
 export const getAuditLog = async () => {
     const response = await fetch(`${API_URL}/audit_log`);
     if (!response.ok) throw new Error('Failed to fetch audit log');
+    return response.json();
+};
+
+export const submitReviewDecision = async (threadId, decision, actor = "reviewer") => {
+    const url = `${API_URL}/review/${encodeURIComponent(threadId)}/decision?decision=${encodeURIComponent(decision)}&actor=${encodeURIComponent(actor)}`;
+    const response = await fetch(url, {
+        method: 'POST',
+    });
+    if (!response.ok) throw new Error('Failed to submit review decision');
     return response.json();
 };
