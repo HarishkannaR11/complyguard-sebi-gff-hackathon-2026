@@ -134,77 +134,99 @@ def parse_pdf_structured(pdf_path: str) -> list[dict]:
             if not clean_block_text.strip():
                 continue
 
-            # Split block to check if the first line is a structural header
-            lines = [l.strip() for l in clean_block_text.split("\n") if l.strip()]
-            if not lines:
-                continue
-
-            first_line = lines[0]
-            annex_match = ANNEXURE_PATTERN.match(first_line)
-            sec_match = SECTION_PATTERN.match(first_line)
-            subsec_match = SUBSECTION_PATTERN.match(first_line)
-            clause_match = CLAUSE_PATTERN.match(first_line)
-
-            if annex_match:
-                current_annexure = first_line[:100]
-                current_section = "General"
-                current_subsection = ""
-                current_clause = ""
-                parent_clause = ""
-
-                type_val = "annexure"
-                text_val = clean_block_text
-                confidence_val = 0.90
-            elif sec_match:
-                current_section = sec_match.group(2)[:100]
-                current_subsection = ""
-                current_clause = ""
-                parent_clause = ""
-
-                type_val = "section"
-                text_val = clean_block_text
-                confidence_val = 0.90
-            elif subsec_match:
-                current_subsection = subsec_match.group(2)[:100]
-                current_clause = ""
-                parent_clause = ""
-
-                type_val = "section"
-                text_val = clean_block_text
-                confidence_val = 0.90
-            elif clause_match:
-                clause_num = clause_match.group(1)
-                current_clause = clause_num
-
-                if "." in clause_num:
-                    parts = clause_num.split(".")
-                    parent_clause = ".".join(parts[:-1])
+            # Group lines into paragraphs, splitting when a line starts with a new header
+            raw_lines = [l.strip() for l in clean_block_text.split("\n") if l.strip()]
+            paragraphs = []
+            current_para = []
+            
+            for line in raw_lines:
+                line_clean = normalize_whitespace(line)
+                is_header = (
+                    ANNEXURE_PATTERN.match(line_clean) or
+                    SECTION_PATTERN.match(line_clean) or
+                    SUBSECTION_PATTERN.match(line_clean) or
+                    CLAUSE_PATTERN.match(line_clean)
+                )
+                
+                if is_header and current_para:
+                    paragraphs.append(" ".join(current_para))
+                    current_para = [line]
                 else:
+                    current_para.append(line)
+                    
+            if current_para:
+                paragraphs.append(" ".join(current_para))
+
+            for para_text in paragraphs:
+                clean_para_text = normalize_whitespace(para_text)
+                if not clean_para_text:
+                    continue
+
+                annex_match = ANNEXURE_PATTERN.match(clean_para_text)
+                sec_match = SECTION_PATTERN.match(clean_para_text)
+                subsec_match = SUBSECTION_PATTERN.match(clean_para_text)
+                clause_match = CLAUSE_PATTERN.match(clean_para_text)
+
+                if annex_match:
+                    current_annexure = clean_para_text[:100]
+                    current_section = "General"
+                    current_subsection = ""
+                    current_clause = ""
                     parent_clause = ""
 
-                clause_headers_count += 1
-                type_val = "obligation"
-                text_val = clean_block_text
-                confidence_val = 0.95
-            else:
-                type_val = "obligation"
-                text_val = clean_block_text
-                confidence_val = 0.85
-                if not current_clause:
-                    confidence_val = 0.60  # low confidence if no clause context is established
+                    type_val = "annexure"
+                    text_val = clean_para_text
+                    confidence_val = 0.90
+                elif sec_match:
+                    current_section = sec_match.group(2)[:100]
+                    current_subsection = ""
+                    current_clause = ""
+                    parent_clause = ""
 
-                if len(clean_block_text) < 30 and not first_line.endswith((".", ":", ";")):
-                    confidence_val = 0.65  # possible orphan snippet
+                    type_val = "section"
+                    text_val = clean_para_text
+                    confidence_val = 0.90
+                elif subsec_match:
+                    current_subsection = subsec_match.group(2)[:100]
+                    current_clause = ""
+                    parent_clause = ""
 
-            structured_chunks.append({
-                "page": page_num,
-                "section": current_annexure or current_section,
-                "clause": current_clause,
-                "parent": parent_clause,
-                "text": text_val,
-                "type": type_val,
-                "confidence": confidence_val,
-            })
+                    type_val = "section"
+                    text_val = clean_para_text
+                    confidence_val = 0.90
+                elif clause_match:
+                    clause_num = clause_match.group(1)
+                    current_clause = clause_num
+
+                    if "." in clause_num:
+                        parts = clause_num.split(".")
+                        parent_clause = ".".join(parts[:-1])
+                    else:
+                        parent_clause = ""
+
+                    clause_headers_count += 1
+                    type_val = "obligation"
+                    text_val = clean_para_text
+                    confidence_val = 0.95
+                else:
+                    type_val = "obligation"
+                    text_val = clean_para_text
+                    confidence_val = 0.85
+                    if not current_clause:
+                        confidence_val = 0.60  # low confidence if no clause context is established
+
+                    if len(clean_para_text) < 30 and not clean_para_text.endswith((".", ":", ";")):
+                        confidence_val = 0.65  # possible orphan snippet
+
+                structured_chunks.append({
+                    "page": page_num,
+                    "section": current_annexure or current_section,
+                    "clause": current_clause,
+                    "parent": parent_clause,
+                    "text": text_val,
+                    "type": type_val,
+                    "confidence": confidence_val,
+                })
 
         # Append tables as distinct blocks associated with the current section
         for page_table in page_tables:

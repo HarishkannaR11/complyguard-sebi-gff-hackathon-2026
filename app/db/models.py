@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Float
 from sqlalchemy.orm import relationship
 import datetime
 
@@ -17,6 +17,8 @@ class Section(Base):
     id = Column(String, primary_key=True)
     title = Column(String)
     circular_id = Column(String, ForeignKey("circulars.id"))
+    
+    circular = relationship("Circular")
 
 
 class Clause(Base):
@@ -25,6 +27,8 @@ class Clause(Base):
     clause_number = Column(String)
     text = Column(Text)
     section_id = Column(String, ForeignKey("sections.id"))
+
+    section = relationship("Section")
 
 
 class Obligation(Base):
@@ -120,3 +124,17 @@ class AuditTrail(Base):
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
     prev_hash = Column(String)
     hash = Column(String)
+
+
+class ReviewQueue(Base):
+    __tablename__ = "review_queue"
+    id = Column(String, primary_key=True)  # thread_id
+    circular_id = Column(String)
+    clause_id = Column(String)
+    previous_clause = Column(Text, nullable=True)
+    new_clause = Column(Text)
+    highlighted_diff = Column(Text, nullable=True)
+    llm_explanation = Column(Text, nullable=True)
+    confidence = Column(Float, nullable=True)
+    extracted_obligation = Column(JSON, nullable=True)
+    status = Column(String, default="pending")

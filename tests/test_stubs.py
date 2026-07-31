@@ -13,8 +13,8 @@ from scripts.generate_synthetic_data import generate
 
 
 def test_remaining_stub_functions_raise_not_implemented_when_called():
-    with pytest.raises(NotImplementedError):
-        seed()
+    # seed() is now implemented and should not raise NotImplementedError
+    seed()
     with pytest.raises(NotImplementedError):
         generate()
 

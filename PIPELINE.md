@@ -294,7 +294,9 @@ say "this obligation's clause is genuinely gone" rather than "its clause failed 
 | `GET /evidence` | all evidence rows, joined back to their obligation |
 | `POST /evidence` | attaches an `EvidenceLog` row to the `Task` for a given `obligation_id` (404 if no task exists yet) |
 | `GET /audit_log` | full audit trail, newest first, with node names mapped to display labels via `_AUDIT_ACTION_LABELS` |
-| `POST /review/{thread_id}/decision` | resumes a paused `human_review` interrupt; **rejects with 409** if the thread isn't actually paused (`Command(resume=...)` on a non-paused/nonexistent thread is otherwise a silent no-op that would look like success) |
+| `GET /review/queue` | fetches list of pending review items from the database review workspace queue |
+| `POST /review/{thread_id}/submit` | resumes a paused `human_review` interrupt asynchronously via background tasks |
+| `POST /review/{thread_id}/decision` | resumes a paused `human_review` interrupt synchronously (backward-compatible) |
 
 `/upload`'s per-clause loop tracks `matched_obligation_ids` from three sources: a completed run's
 `task.obligation_id`, an `"unchanged"` clause's `similarity_match` (mapper no-oped but the obligation

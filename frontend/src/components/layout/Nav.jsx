@@ -1,6 +1,7 @@
 const STEPS = [
   { id: "landing", label: "Overview" },
   { id: "upload", label: "Upload" },
+  { id: "review", label: "Review Workspace" },
   { id: "obligations", label: "Obligations" },
   { id: "dashboard", label: "Gap Dashboard" },
   { id: "audit", label: "Audit Trail" },

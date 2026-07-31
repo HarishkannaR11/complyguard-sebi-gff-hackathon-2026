@@ -4,16 +4,17 @@ import Sidebar from "./components/layout/Sidebar";
 import Hero from "./components/views/Hero";
 import Landing from "./components/views/Landing";
 import UploadCircular from "./components/views/UploadCircular";
+import ReviewWorkspace from "./components/views/ReviewWorkspace";
 import ObligationList from "./components/views/ObligationList";
 import GapDashboard from "./components/views/GapDashboard";
 import AuditTrail from "./components/views/AuditTrail";
 import { getObligations, getEvidence, getAuditLog, addEvidence } from "./api";
 
-const ALL_VIEWS = ["landing", "upload", "obligations", "dashboard", "audit"];
+const ALL_VIEWS = ["landing", "upload", "review", "obligations", "dashboard", "audit"];
 
 export default function App() {
   const [view, setView] = useState("landing");
-  const [unlocked, setUnlocked] = useState(["landing", "upload"]);
+  const [unlocked, setUnlocked] = useState(["landing", "upload", "review"]);
   const [obligations, setObligations] = useState([]);
   const [evidence, setEvidence] = useState([]);
   const [auditLog, setAuditLog] = useState([]);
@@ -84,6 +85,7 @@ export default function App() {
       <div className="mx-auto flex max-w-6xl flex-col gap-8 px-6 py-10 lg:flex-row">
         {view === "landing" && <Landing />}
         {view === "upload" && <UploadCircular onComplete={handleUploadComplete} />}
+        {view === "review" && <ReviewWorkspace />}
         {view === "obligations" && (
           <ObligationList
             obligations={obligations}

@@ -71,3 +71,24 @@ export const submitReviewDecision = async (threadId, decision, actor = "reviewer
     if (!response.ok) throw new Error('Failed to submit review decision');
     return response.json();
 };
+
+export const getReviewQueue = async () => {
+    const response = await fetch(`${API_URL}/review/queue`);
+    if (!response.ok) throw new Error('Failed to fetch review queue');
+    return response.json();
+};
+
+export const submitReviewAction = async (threadId, action, obligationData = null) => {
+    const response = await fetch(`${API_URL}/review/${encodeURIComponent(threadId)}/submit`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            action: action,
+            obligation_data: obligationData,
+        }),
+    });
+    if (!response.ok) throw new Error('Failed to submit review action');
+    return response.json();
+};

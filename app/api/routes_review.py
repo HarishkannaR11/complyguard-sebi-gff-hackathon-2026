@@ -1,7 +1,12 @@
 """Human-review API routes: resume a paused compliance-pipeline run with a decision."""
-from fastapi import APIRouter, HTTPException
+import json
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 from langgraph.types import Command
 
+from app.db.database import get_db
+from app.db.models import ReviewQueue
 from app.graph.build_graph import build_graph
 
 router = APIRouter()
@@ -16,17 +21,88 @@ def _get_graph():
     return _graph
 
 
+def async_resume_graph(thread_id: str, action: str, obligation_data: dict = None):
+    try:
+        graph = build_graph()
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        if action == "approve":
+            decision = "approve"
+        elif action == "reject":
+            decision = "reject"
+        elif action in ("edit", "amend"):
+            decision = f"amend:{json.dumps(obligation_data)}"
+        else:
+            decision = "approve"
+            
+        graph.invoke(
+            Command(resume={"decision": decision, "actor": "reviewer"}),
+            config=config,
+        )
+    except Exception as e:
+        print(f"[ERROR] Asynchronous resume failed for thread {thread_id}: {e}")
+
+
+@router.get("/review/queue")
+def get_review_queue(db: Session = Depends(get_db)):
+    items = db.query(ReviewQueue).filter(ReviewQueue.status == "pending").all()
+    results = []
+    for item in items:
+        results.append({
+            "id": item.id,
+            "circular_id": item.circular_id,
+            "clause_id": item.clause_id,
+            "previous_clause": item.previous_clause,
+            "new_clause": item.new_clause,
+            "highlighted_diff": item.highlighted_diff,
+            "llm_explanation": item.llm_explanation,
+            "confidence": item.confidence,
+            "extracted_obligation": item.extracted_obligation,
+            "status": item.status
+        })
+    return results
+
+
+class ReviewActionPayload(BaseModel):
+    action: str  # "approve", "reject", "edit"
+    obligation_data: dict = None
+
+
+@router.post("/review/{thread_id}/submit")
+def submit_review_action(
+    thread_id: str,
+    payload: ReviewActionPayload,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": thread_id}}
+
+    if not graph.get_state(config).next:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No pending review for thread '{thread_id}' — nothing is paused.",
+        )
+
+    # Update ReviewQueue table status immediately
+    item = db.query(ReviewQueue).filter(ReviewQueue.id == thread_id).first()
+    if item:
+        item.status = "approved" if payload.action == "approve" else ("rejected" if payload.action == "reject" else "edited")
+        if payload.obligation_data:
+            item.extracted_obligation = payload.obligation_data
+        db.commit()
+
+    # Run graph invoke in background task
+    background_tasks.add_task(async_resume_graph, thread_id, payload.action, payload.obligation_data)
+
+    return {"status": "resumed_async"}
+
+
 @router.post("/review/{thread_id}/decision")
 def submit_decision(thread_id: str, decision: str, actor: str = "reviewer"):
     graph = _get_graph()
     config = {"configurable": {"thread_id": thread_id}}
 
-    # Command(resume=...) is a silent no-op on a thread that isn't actually
-    # paused (never existed, or already ran to completion) — it just returns
-    # the last checkpointed state without doing anything, which looks like a
-    # normal success response even though the "decision" was never applied to
-    # anything. Reject that case explicitly instead of returning a
-    # misleading 200.
     if not graph.get_state(config).next:
         raise HTTPException(
             status_code=409,

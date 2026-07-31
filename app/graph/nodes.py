@@ -35,7 +35,7 @@ def parse_json_robust(content: str) -> dict:
             raise ValueError(f"Failed to decode LLM JSON: {raw_json}. Error: {str(e)}")
 
 from app.db.database import SessionLocal
-from app.db.models import AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause, Evidence, Deadline, ApplicableEntity
+from app.db.models import AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause, Evidence, Deadline, ApplicableEntity, ReviewQueue
 from app.embeddings.embedder import embed_texts
 from app.embeddings.qdrant_client import ensure_collection, get_client, search, upsert_chunks
 
@@ -529,12 +529,83 @@ def _write_audit_entry(thread_id: str, node_name: str, action: dict, actor: str)
             db.close()
 
 
+import difflib
+
+
+def generate_text_diff(old_text: str, new_text: str) -> str:
+    if not old_text:
+        return new_text
+    
+    old_words = old_text.split()
+    new_words = new_text.split()
+    
+    matcher = difflib.SequenceMatcher(None, old_words, new_words)
+    diff_html = []
+    
+    for opcode, a_start, a_end, b_start, b_end in matcher.get_opcodes():
+        if opcode == 'equal':
+            diff_html.append(" ".join(old_words[a_start:a_end]))
+        elif opcode == 'replace':
+            diff_html.append(f"<del class='bg-red-100 text-red-700 line-through px-1 rounded'>{' '.join(old_words[a_start:a_end])}</del>")
+            diff_html.append(f"<ins class='bg-green-100 text-green-700 font-semibold px-1 rounded'>{' '.join(new_words[b_start:b_end])}</ins>")
+        elif opcode == 'delete':
+            diff_html.append(f"<del class='bg-red-100 text-red-700 line-through px-1 rounded'>{' '.join(old_words[a_start:a_end])}</del>")
+        elif opcode == 'insert':
+            diff_html.append(f"<ins class='bg-green-100 text-green-700 font-semibold px-1 rounded'>{' '.join(new_words[b_start:b_end])}</ins>")
+            
+    return " ".join(diff_html)
+
+
 def human_review_node(state: ComplianceState) -> dict:
+    prev_text = None
+    similarity_match = state.get("similarity_match")
+    if similarity_match:
+        prev_text = similarity_match.get("text")
+        
+    new_text = state.get("raw_clause") or ""
+    diff = generate_text_diff(prev_text or "", new_text)
+    
+    # Save to ReviewQueue database table
+    db = SessionLocal()
+    try:
+        thread_id = f"{state['circular_id']}:{state['clause_id']}"
+        review_item = db.query(ReviewQueue).filter(ReviewQueue.id == thread_id).first()
+        if not review_item:
+            explanation = state.get("diff_reason")
+            if not explanation and state.get("validation_errors"):
+                explanation = ", ".join(state["validation_errors"])
+                
+            confidence = state.get("overall_confidence")
+            if confidence is None and similarity_match:
+                confidence = similarity_match.get("score")
+                
+            review_item = ReviewQueue(
+                id=thread_id,
+                circular_id=state["circular_id"],
+                clause_id=state["clause_id"],
+                previous_clause=prev_text,
+                new_clause=new_text,
+                highlighted_diff=diff,
+                llm_explanation=explanation,
+                confidence=confidence,
+                extracted_obligation=state.get("extracted_obligation"),
+                status="pending"
+            )
+            db.add(review_item)
+            db.commit()
+    finally:
+        db.close()
+
     resume = interrupt({
         "clause_id": state["clause_id"],
         "extracted_obligation": state.get("extracted_obligation"),
         "diff_status": state.get("diff_status"),
         "similarity_match": state.get("similarity_match"),
+        "previous_clause": prev_text,
+        "new_clause": new_text,
+        "highlighted_diff": diff,
+        "llm_explanation": state.get("diff_reason") or (state.get("validation_errors") and ", ".join(state["validation_errors"])),
+        "confidence": state.get("overall_confidence") or (similarity_match and similarity_match.get("score")),
     })
     decision = resume["decision"]
     actor = resume.get("actor", "unknown")
@@ -545,6 +616,20 @@ def human_review_node(state: ComplianceState) -> dict:
         amendment = json.loads(decision[len("amend:"):])
         extracted_obligation = {**(extracted_obligation or {}), **amendment}
         human_decision = "amend"
+
+    # Update status in ReviewQueue table
+    db = SessionLocal()
+    try:
+        thread_id = f"{state['circular_id']}:{state['clause_id']}"
+        review_item = db.query(ReviewQueue).filter(ReviewQueue.id == thread_id).first()
+        if review_item:
+            review_item.status = "approved" if human_decision == "approve" else ("rejected" if human_decision == "reject" else "edited")
+            review_item.extracted_obligation = extracted_obligation
+            db.commit()
+    except Exception as e:
+        print(f"[WARNING] Failed to update ReviewQueue status: {e}")
+    finally:
+        db.close()
 
     _write_audit_entry(
         thread_id=f"{state['circular_id']}:{state['clause_id']}",
