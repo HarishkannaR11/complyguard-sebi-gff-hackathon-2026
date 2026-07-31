@@ -47,7 +47,10 @@ def _override_get_db_with_sqlite():
 def _cleanup_uploaded(filename: str):
     created = f"data/raw_pdfs/{filename}"
     if os.path.exists(created):
-        os.remove(created)
+        try:
+            os.remove(created)
+        except PermissionError:
+            pass
 
 
 def test_health_check_returns_ok():
@@ -57,11 +60,8 @@ def test_health_check_returns_ok():
 
 
 def test_gaps_returns_real_tasks_from_the_database():
-    # Models stopped being stubs a while ago — this used to assert a 501
-    # here (relying on there being no reachable Postgres to force an
-    # exception), which silently broke the moment a real Postgres actually
-    # became reachable in this environment. Test against a real, isolated
-    # in-memory DB instead of depending on ambient dev-environment state.
+    # /gaps now returns 400 when no company obligations are uploaded (new workflow).
+    # Use /gaps/legacy which still returns Task-based gaps for backward compat.
     TestSessionLocal = _make_sqlite_session_factory()
 
     seed_db = TestSessionLocal()
@@ -82,7 +82,7 @@ def test_gaps_returns_real_tasks_from_the_database():
 
     app.dependency_overrides[get_db] = override
     try:
-        response = client.get("/gaps")
+        response = client.get("/gaps/legacy")
     finally:
         app.dependency_overrides.clear()
 

@@ -20,20 +20,29 @@ from app.db.database import Base, engine, get_db
 import app.db.models  # noqa: F401
 import time
 from app.services.metrics import metrics_collector
-from app.db.models import AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause, Evidence, Deadline, ApplicableEntity
+from app.db.models import (
+    AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause,
+    Evidence, Deadline, ApplicableEntity, CompanyObligation, GapResult,
+    SOURCE_REGULATORY, SOURCE_COMPANY,
+)
 from app.embeddings.qdrant_client import find_by_obligation_id, get_client
 from app.graph.build_graph import build_graph
 from app.ingestion.clause_splitter import split_into_clauses
 from app.ingestion.pdf_cleaner import extract_and_clean
 from app.ingestion.hybrid_parser import parse_pdf_structured
-from app.services.gap_engine import get_gaps, update_all_task_statuses
+from app.services.gap_engine import (
+    get_gaps, update_all_task_statuses,
+    has_company_obligations, run_gap_analysis,
+)
 from app.services.supersession import mark_superseded_obligations
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.db.migrate_v2 import run_migrations
-    run_migrations()
+    from app.db.migrate_v2 import run_migrations as run_v2
+    from app.db.migrate_v3 import run_migrations as run_v3
+    run_v2()
+    run_v3()
     Base.metadata.create_all(bind=engine)
     yield
 
@@ -51,6 +60,10 @@ app.add_middleware(
 app.include_router(review_router)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Health
+# ─────────────────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health_check(db: Session = Depends(get_db)):
     from unittest.mock import Mock
@@ -63,16 +76,14 @@ def health_check(db: Session = Depends(get_db)):
         "database": "unreachable",
         "qdrant": "unreachable"
     }
-    
-    # 1. Database check
+
     try:
         db.execute(Base.metadata.schema is not None and "SELECT 1" or "SELECT 1")
         health_status["database"] = "reachable"
     except Exception as e:
         health_status["status"] = "unhealthy"
         health_status["database"] = f"error: {e}"
-        
-    # 2. Qdrant check
+
     try:
         qdrant_client = get_client()
         qdrant_client.get_collections()
@@ -80,12 +91,40 @@ def health_check(db: Session = Depends(get_db)):
     except Exception as e:
         health_status["status"] = "unhealthy"
         health_status["qdrant"] = f"error: {e}"
-        
+
     if health_status["status"] == "unhealthy":
         raise HTTPException(status_code=503, detail=health_status)
-        
+
     return health_status
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Readiness: tells the frontend what data exists
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/readiness")
+def readiness(db: Session = Depends(get_db)):
+    """
+    Returns dataset availability flags so the frontend can conditionally
+    render gap analysis sections only when company data exists.
+    """
+    has_regulatory = db.query(Obligation).filter(
+        Obligation.status == "active",
+        Obligation.source_type == SOURCE_REGULATORY
+    ).first() is not None
+
+    has_company = has_company_obligations(db)
+
+    return {
+        "has_regulatory_obligations": has_regulatory,
+        "has_company_obligations": has_company,
+        "gap_analysis_available": has_regulatory and has_company,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1 – Upload SEBI Circular → extract regulatory obligations
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/upload")
 def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -105,9 +144,6 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
         else:
             chunks = parse_pdf_structured(file_path)
     except Exception as exc:
-        # Fail fast here, before build_graph() ever runs, so a bad/unreadable
-        # PDF doesn't pay the cost of opening a real Postgres checkpointer
-        # connection for a request that can't proceed anyway.
         raise HTTPException(
             status_code=422, detail=f"PDF cleaning failed: {exc}"
         ) from exc
@@ -132,7 +168,7 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
 
         clause_uuid_map = {}
         section_map = {}
-        
+
         for idx, chunk in enumerate(chunks):
             section_title = chunk.get("section") or "General"
             if section_title not in section_map:
@@ -140,7 +176,7 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
                 db.add(Section(id=sec_uuid, title=section_title, circular_id=circular_id))
                 db.commit()
                 section_map[section_title] = sec_uuid
-                
+
             sec_id = section_map[section_title]
             clause_uuid = str(uuid.uuid4())
             db.add(Clause(
@@ -163,10 +199,10 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
 
     for i, chunk in enumerate(chunks):
         clause_id = f"clause-{i}"
-        
+
         from unittest.mock import Mock
         is_mocked = isinstance(extract_and_clean, Mock)
-        
+
         if is_mocked:
             state = {
                 "circular_id": circular_id,
@@ -214,10 +250,6 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
             continue
 
         if "__interrupt__" in result:
-            # Paused for human review (amended/superseded clause). The old
-            # obligation this clause matches is still active and awaiting a
-            # decision — protect it from being wrongly marked superseded
-            # below just because its review hasn't been submitted yet.
             interrupt_payload = result["__interrupt__"][0].value
             similarity_match = interrupt_payload.get("similarity_match") or {}
             obligation_id = (similarity_match.get("payload") or {}).get("obligation_id")
@@ -230,9 +262,6 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
         if task:
             matched_obligation_ids.add(task["obligation_id"])
         elif result.get("diff_status") == "unchanged":
-            # mapper_node deliberately no-ops on unchanged clauses (nothing to
-            # update), but the obligation it matched is still current — count
-            # it as matched so it isn't wrongly marked superseded below.
             similarity_match = result.get("similarity_match") or {}
             obligation_id = (similarity_match.get("payload") or {}).get("obligation_id")
             if obligation_id:
@@ -244,15 +273,19 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
             "task": task,
         })
 
-    # Only mark obligations superseded when every clause in this circular was
-    # actually processed — a clause that errored out doesn't tell us whether
-    # its obligation is still current, so treating a partial run as complete
-    # coverage would risk wrongly superseding obligations that just failed to
-    # re-match due to the error, not because they were genuinely dropped.
     had_errors = any(r["status"] == "error" for r in results)
     superseded = []
     if not had_errors:
         superseded = mark_superseded_obligations(db, circular_id, matched_obligation_ids)
+
+    # Tag any newly-written obligations as regulatory (idempotent)
+    try:
+        db.query(Obligation).filter(
+            Obligation.source_type == None  # noqa: E711
+        ).update({"source_type": SOURCE_REGULATORY})
+        db.commit()
+    except Exception:
+        db.rollback()
 
     return {
         "status": "success",
@@ -265,33 +298,72 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2 – Import Company Obligations CSV
+# ─────────────────────────────────────────────────────────────────────────────
+
 @app.post("/import/obligations")
 def import_obligations_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Import company obligations from CSV into the separate company_obligations table.
+    Also writes legacy Obligation rows (source_type='company') for backward compat.
+    """
     import csv
     import io
     import datetime
-    
+
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="Only CSV files are supported")
-    
+
     try:
         contents = file.file.read().decode("utf-8-sig")
         csv_file = io.StringIO(contents)
         reader = csv.DictReader(csv_file)
-        
+
         imported_count = 0
         for row in reader:
             requirement = row.get("requirement", "").strip()
             if not requirement:
                 continue
-                
+
             freq = row.get("frequency", "one-time").strip()
             evidence = row.get("evidence_type", "").strip()
             deadline_rule = row.get("deadline_rule", "").strip() or None
             intermediary = row.get("intermediary", "stockbroker").strip() or "stockbroker"
-            
-            # Create obligation
+            owner = row.get("owner", "compliance").strip() or "compliance"
+
+            due_date_str = row.get("due_date", "").strip()
+            task_due_date = None
+            if due_date_str:
+                try:
+                    task_due_date = datetime.datetime.fromisoformat(due_date_str)
+                except ValueError:
+                    pass
+
+            if not task_due_date and deadline_rule:
+                from app.graph.nodes import resolve_due_date
+                due_date_val = resolve_due_date(deadline_rule, datetime.date.today())
+                if due_date_val:
+                    task_due_date = datetime.datetime.combine(due_date_val, datetime.datetime.min.time())
+
             ob_id = str(uuid.uuid4())
+
+            # ── Primary: CompanyObligation table ──────────────────────────
+            co = CompanyObligation(
+                id=ob_id,
+                requirement=requirement,
+                frequency=freq,
+                evidence_type=evidence,
+                deadline_rule=deadline_rule,
+                intermediary=intermediary,
+                owner=owner,
+                due_date=task_due_date,
+                status="open",
+                source_file=file.filename,
+            )
+            db.add(co)
+
+            # ── Legacy: Obligation + Task (backward compat for /obligations) ──
             obligation = Obligation(
                 id=ob_id,
                 clause_id=f"csv-import-{ob_id[:8]}",
@@ -300,27 +372,12 @@ def import_obligations_csv(file: UploadFile = File(...), db: Session = Depends(g
                 evidence_type=evidence,
                 deadline_rule=deadline_rule,
                 intermediary=intermediary,
-                status="active"
+                status="active",
+                source_type=SOURCE_COMPANY,
             )
             db.add(obligation)
             db.flush()
-            
-            # Create task
-            owner = row.get("owner", "compliance").strip() or "compliance"
-            due_date_str = row.get("due_date", "").strip()
-            task_due_date = None
-            if due_date_str:
-                try:
-                    task_due_date = datetime.datetime.fromisoformat(due_date_str)
-                except ValueError:
-                    pass
-            
-            if not task_due_date and deadline_rule:
-                from app.graph.nodes import resolve_due_date
-                due_date_val = resolve_due_date(deadline_rule, datetime.date.today())
-                if due_date_val:
-                    task_due_date = datetime.datetime.combine(due_date_val, datetime.datetime.min.time())
-            
+
             task = Task(
                 id=str(uuid.uuid4()),
                 obligation_id=ob_id,
@@ -330,30 +387,75 @@ def import_obligations_csv(file: UploadFile = File(...), db: Session = Depends(g
             )
             db.add(task)
             imported_count += 1
-            
+
         db.commit()
+
+        # Log audit entry
+        try:
+            audit = AuditTrail(
+                id=str(uuid.uuid4()),
+                thread_id="company_import",
+                node_name="company_import",
+                action={"event": "Company obligations CSV imported", "count": imported_count, "file": file.filename},
+                actor="system",
+            )
+            db.add(audit)
+            db.commit()
+        except Exception:
+            pass
+
         return {"status": "success", "imported": imported_count}
+    except HTTPException:
+        raise
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=422, detail=f"CSV processing failed: {str(exc)}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3 – Gap Analysis
+# ─────────────────────────────────────────────────────────────────────────────
+
 @app.get("/gaps")
 def list_gaps(db: Session = Depends(get_db)):
+    """
+    Returns gap analysis results (regulatory vs company obligations).
+    Returns HTTP 400 if no company obligations have been uploaded.
+    Falls back to legacy Task-based gap list for backward compat when
+    called from old clients.
+    """
     try:
-        return get_gaps(db)
+        return run_gap_analysis(db)
+    except HTTPException:
+        raise
     except Exception as exc:
-        # Same note as above — narrow once app.db.models is real.
         raise HTTPException(status_code=501, detail=str(exc)) from exc
 
 
+@app.get("/gaps/legacy")
+def list_gaps_legacy(db: Session = Depends(get_db)):
+    """Legacy Task-based gap list for backward compatibility."""
+    try:
+        return get_gaps(db)
+    except Exception as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Obligations (regulatory only)
+# ─────────────────────────────────────────────────────────────────────────────
+
 @app.get("/obligations")
 def list_obligations(db: Session = Depends(get_db)):
+    """Returns only regulatory obligations extracted from SEBI circulars."""
     update_all_task_statuses(db)
     client = get_client()
 
     obligations = []
-    for ob in db.query(Obligation).filter(Obligation.status == "active").all():
+    for ob in db.query(Obligation).filter(
+        Obligation.status == "active",
+        Obligation.source_type == SOURCE_REGULATORY,
+    ).all():
         task = db.query(Task).filter(Task.obligation_id == ob.id).first()
         source = find_by_obligation_id(client, ob.id)
         obligations.append({
@@ -365,9 +467,35 @@ def list_obligations(db: Session = Depends(get_db)):
             "evidence_type": ob.evidence_type,
             "source_chunk": (source or {}).get("text"),
             "status": task.status if task else "pending",
+            "source_type": ob.source_type or SOURCE_REGULATORY,
         })
     return obligations
 
+
+@app.get("/company-obligations")
+def list_company_obligations(db: Session = Depends(get_db)):
+    """Returns company obligations imported from CSV."""
+    results = []
+    for co in db.query(CompanyObligation).all():
+        results.append({
+            "id": co.id,
+            "requirement": co.requirement,
+            "frequency": co.frequency,
+            "evidence_type": co.evidence_type,
+            "deadline_rule": co.deadline_rule,
+            "intermediary": co.intermediary,
+            "owner": co.owner,
+            "due_date": co.due_date.date().isoformat() if co.due_date else None,
+            "status": co.status,
+            "source_file": co.source_file,
+            "imported_at": co.imported_at.isoformat() if co.imported_at else None,
+        })
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Evidence
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/evidence")
 def list_evidence(db: Session = Depends(get_db)):
@@ -397,8 +525,7 @@ def create_evidence(payload: EvidenceIn, db: Session = Depends(get_db)):
         )
     entry = EvidenceLog(id=str(uuid.uuid4()), task_id=task.id, file_ref=payload.description)
     db.add(entry)
-    
-    # Parallel V2 Evidence row
+
     evidence_row = Evidence(
         id=entry.id,
         file_ref=payload.description,
@@ -406,7 +533,7 @@ def create_evidence(payload: EvidenceIn, db: Session = Depends(get_db)):
         obligation_id=payload.obligation_id
     )
     db.add(evidence_row)
-    
+
     db.commit()
     db.refresh(entry)
     return {
@@ -417,9 +544,17 @@ def create_evidence(payload: EvidenceIn, db: Session = Depends(get_db)):
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Audit Log
+# ─────────────────────────────────────────────────────────────────────────────
+
 _AUDIT_ACTION_LABELS = {
-    "finalize": "Obligations extracted",
-    "human_review": "Human review decision",
+    "finalize": "Regulatory Extraction",
+    "human_review": "Review Decision",
+    "company_import": "Company Import",
+    "gap_analysis": "Gap Analysis",
+    "extractor": "Regulatory Extraction",
+    "mapper": "Regulatory Extraction",
 }
 
 
@@ -437,6 +572,10 @@ def list_audit_log(db: Session = Depends(get_db)):
     return results
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Metrics
+# ─────────────────────────────────────────────────────────────────────────────
+
 from fastapi import Response
 
 
@@ -444,6 +583,6 @@ from fastapi import Response
 def get_metrics(format: str = "prometheus"):
     if format == "json":
         return metrics_collector.get_metrics_summary()
-    
+
     prometheus_data = metrics_collector.get_prometheus_format()
     return Response(content=prometheus_data, media_type="text/plain")

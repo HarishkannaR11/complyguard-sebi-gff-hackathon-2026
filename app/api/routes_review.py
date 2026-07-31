@@ -78,45 +78,78 @@ def submit_review_action(
     graph = _get_graph()
     config = {"configurable": {"thread_id": thread_id}}
 
-    if not graph.get_state(config).next:
-        raise HTTPException(
-            status_code=409,
-            detail=f"No pending review for thread '{thread_id}' — nothing is paused.",
-        )
+    is_paused = bool(graph.get_state(config).next)
 
-    # Update ReviewQueue table status immediately
-    item = db.query(ReviewQueue).filter(ReviewQueue.id == thread_id).first()
+    # Try updating ReviewQueue table status if item exists
+    item = None
+    try:
+        item = db.query(ReviewQueue).filter(ReviewQueue.id == thread_id).first()
+        if item:
+            item.status = "approved" if payload.action == "approve" else ("rejected" if payload.action == "reject" else "edited")
+            if payload.obligation_data:
+                item.extracted_obligation = payload.obligation_data
+            db.commit()
+    except Exception:
+        pass
+
+    if is_paused:
+        # Run graph invoke in background task
+        background_tasks.add_task(async_resume_graph, thread_id, payload.action, payload.obligation_data)
+        return {"status": "resumed_async"}
+
     if item:
-        item.status = "approved" if payload.action == "approve" else ("rejected" if payload.action == "reject" else "edited")
-        if payload.obligation_data:
-            item.extracted_obligation = payload.obligation_data
-        db.commit()
+        return {"status": "updated_db_only"}
 
-    # Run graph invoke in background task
-    background_tasks.add_task(async_resume_graph, thread_id, payload.action, payload.obligation_data)
-
-    return {"status": "resumed_async"}
+    raise HTTPException(
+        status_code=409,
+        detail=f"No pending review for thread '{thread_id}' — nothing is paused.",
+    )
 
 
 @router.post("/review/{thread_id}/decision")
-def submit_decision(thread_id: str, decision: str, actor: str = "reviewer"):
+def submit_decision(
+    thread_id: str,
+    decision: str,
+    actor: str = "reviewer",
+    db: Session = Depends(get_db)
+):
     graph = _get_graph()
     config = {"configurable": {"thread_id": thread_id}}
 
-    if not graph.get_state(config).next:
-        raise HTTPException(
-            status_code=409,
-            detail=f"No pending review for thread '{thread_id}' — nothing is paused.",
-        )
+    is_paused = bool(graph.get_state(config).next)
 
-    from langgraph.errors import GraphInterrupt
+    if is_paused:
+        try:
+            item = db.query(ReviewQueue).filter(ReviewQueue.id == thread_id).first()
+            if item:
+                item.status = "approved" if decision.startswith("approve") else ("rejected" if decision.startswith("reject") else "edited")
+                db.commit()
+        except Exception:
+            pass
+
+        from langgraph.errors import GraphInterrupt
+        try:
+            result = graph.invoke(
+                Command(resume={"decision": decision, "actor": actor}),
+                config=config,
+            )
+        except GraphInterrupt as exc:
+            state_val = graph.get_state(config).values
+            return {"status": "resumed_pending", "state": state_val}
+            
+        return {"status": "resumed", "state": result}
+
+    item = None
     try:
-        result = graph.invoke(
-            Command(resume={"decision": decision, "actor": actor}),
-            config=config,
-        )
-    except GraphInterrupt as exc:
-        state_val = graph.get_state(config).values
-        return {"status": "resumed_pending", "state": state_val}
-        
-    return {"status": "resumed", "state": result}
+        item = db.query(ReviewQueue).filter(ReviewQueue.id == thread_id).first()
+        if item:
+            item.status = "approved" if decision.startswith("approve") else ("rejected" if decision.startswith("reject") else "edited")
+            db.commit()
+            return {"status": "updated_db_only"}
+    except Exception:
+        pass
+
+    raise HTTPException(
+        status_code=409,
+        detail=f"No pending review for thread '{thread_id}' — nothing is paused.",
+    )

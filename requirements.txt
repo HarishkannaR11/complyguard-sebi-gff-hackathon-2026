@@ -4,6 +4,7 @@ python-multipart
 pydantic
 sqlalchemy
 psycopg2-binary
+psycopg-binary
 PyMuPDF==1.28.0
 sentence-transformers
 qdrant-client==1.18.0

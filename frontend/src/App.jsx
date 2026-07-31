@@ -8,9 +8,12 @@ import ReviewWorkspace from "./components/views/ReviewWorkspace";
 import ObligationList from "./components/views/ObligationList";
 import GapDashboard from "./components/views/GapDashboard";
 import AuditTrail from "./components/views/AuditTrail";
-import { getObligations, getEvidence, getAuditLog, addEvidence } from "./api";
+import { getObligations, getEvidence, getAuditLog, addEvidence, getReadiness, getGapAnalysis } from "./api";
 
-const ALL_VIEWS = ["landing", "upload", "review", "obligations", "dashboard", "audit"];
+// Views that are always accessible regardless of data
+const BASE_VIEWS = ["landing", "upload", "review", "obligations", "audit"];
+// Full view list including gap dashboard
+const ALL_VIEWS = [...BASE_VIEWS, "dashboard"];
 
 export default function App() {
   const [view, setView] = useState("landing");
@@ -18,15 +21,46 @@ export default function App() {
   const [obligations, setObligations] = useState([]);
   const [evidence, setEvidence] = useState([]);
   const [auditLog, setAuditLog] = useState([]);
+  const [gapData, setGapData] = useState(null);
+
+  // Readiness flags from the backend
+  const [readiness, setReadiness] = useState({
+    has_regulatory_obligations: false,
+    has_company_obligations: false,
+    gap_analysis_available: false,
+  });
+
+  const fetchReadiness = async () => {
+    const r = await getReadiness();
+    setReadiness(r);
+    return r;
+  };
+
+  const fetchGapData = async () => {
+    try {
+      const data = await getGapAnalysis();
+      setGapData(data.__no_company_data ? null : data);
+    } catch {
+      setGapData(null);
+    }
+  };
 
   const fetchData = async () => {
     try {
-      const obs = await getObligations();
-      const evs = await getEvidence();
-      const logs = await getAuditLog();
+      const [obs, evs, logs, r] = await Promise.all([
+        getObligations(),
+        getEvidence(),
+        getAuditLog(),
+        getReadiness(),
+      ]);
 
-      if (obs.length > 0) {
-        setUnlocked(ALL_VIEWS); // data already exists from a prior run — unlock on load, not just after upload
+      setReadiness(r);
+
+      // Unlock views based on backend readiness
+      if (r.has_regulatory_obligations) {
+        setUnlocked(r.gap_analysis_available ? ALL_VIEWS : BASE_VIEWS);
+      } else if (obs.length > 0) {
+        setUnlocked(BASE_VIEWS);
       }
 
       setObligations(obs.map(o => ({
@@ -37,17 +71,23 @@ export default function App() {
         deadline: o.deadline,
         evidenceType: o.evidence_type,
         sourceChunk: o.source_chunk,
-        status: o.status
+        status: o.status,
+        sourceType: o.source_type,
       })));
-      
+
       setEvidence(evs.map(e => ({
         id: e.id,
         obligationId: e.obligation_id,
         description: e.description,
         submittedAt: e.submitted_at
       })));
-      
+
       setAuditLog(logs);
+
+      // Fetch gap data only if company obligations exist
+      if (r.gap_analysis_available) {
+        await fetchGapData();
+      }
     } catch (error) {
       console.error("Failed to fetch data (backend might not be running).", error);
     }
@@ -59,8 +99,19 @@ export default function App() {
 
   async function handleUploadComplete() {
     await fetchData();
-    setUnlocked(ALL_VIEWS); // full nav available once the pipeline has "run"
     setView("obligations");
+  }
+
+  // Called after successful CSV import — now gap analysis becomes available
+  async function handleCsvImportComplete() {
+    const r = await fetchReadiness();
+    if (r.gap_analysis_available) {
+      setUnlocked(ALL_VIEWS);
+      await fetchGapData();
+    } else {
+      setUnlocked(prev => Array.from(new Set([...prev, ...BASE_VIEWS])));
+    }
+    await fetchData();
   }
 
   function handleStart() {
@@ -71,9 +122,15 @@ export default function App() {
   async function handleAttachEvidence(obligationId, description) {
     try {
       await addEvidence(obligationId, description);
-      await fetchData(); // refresh state from API
+      await fetchData();
     } catch (error) {
       console.error("Failed to add evidence:", error);
+    }
+  }
+
+  function handleOpenDashboard() {
+    if (readiness.gap_analysis_available) {
+      setView("dashboard");
     }
   }
 
@@ -84,7 +141,12 @@ export default function App() {
 
       <div className="mx-auto flex max-w-6xl flex-col gap-8 px-6 py-10 lg:flex-row">
         {view === "landing" && <Landing />}
-        {view === "upload" && <UploadCircular onComplete={handleUploadComplete} />}
+        {view === "upload" && (
+          <UploadCircular
+            onComplete={handleUploadComplete}
+            onCsvImportComplete={handleCsvImportComplete}
+          />
+        )}
         {view === "review" && <ReviewWorkspace />}
         {view === "obligations" && (
           <ObligationList
@@ -95,6 +157,8 @@ export default function App() {
         )}
         {view === "dashboard" && (
           <GapDashboard
+            gapData={gapData}
+            readiness={readiness}
             obligations={obligations}
             onSelectObligation={() => setView("obligations")}
           />
@@ -105,7 +169,8 @@ export default function App() {
           obligations={obligations}
           evidence={evidence}
           auditLog={auditLog}
-          onOpenDashboard={() => setView("dashboard")}
+          readiness={readiness}
+          onOpenDashboard={handleOpenDashboard}
         />
       </div>
 

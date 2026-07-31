@@ -10,13 +10,19 @@ export default function ReviewWorkspace() {
     try {
       setLoading(true);
       const data = await getReviewQueue();
-      setQueue(data.map(item => ({
-        ...item,
-        requirement: item.extracted_obligation?.requirement || "",
-        frequency: item.extracted_obligation?.frequency || "monthly",
-        evidenceType: item.extracted_obligation?.evidence_type || "",
-        deadlineRule: item.extracted_obligation?.deadline_rule || ""
-      })));
+      setQueue(data.map(item => {
+        const reviewId = item.id || item.thread_id || (item.circular_id && item.clause_id ? `${item.circular_id}:${item.clause_id}` : null);
+        const isValidId = Boolean(reviewId && typeof reviewId === "string" && reviewId.trim() !== "" && reviewId !== "undefined");
+        return {
+          ...item,
+          id: reviewId,
+          isValidId,
+          requirement: item.extracted_obligation?.requirement || "",
+          frequency: item.extracted_obligation?.frequency || "monthly",
+          evidenceType: item.extracted_obligation?.evidence_type || "",
+          deadlineRule: item.extracted_obligation?.deadline_rule || ""
+        };
+      }));
       setError(null);
     } catch (err) {
       console.error(err);
@@ -43,6 +49,13 @@ export default function ReviewWorkspace() {
     const item = queue.find(q => q.id === id);
     if (!item) return;
 
+    console.log("Selected review:", item);
+
+    if (!id || id === "undefined" || !item.isValidId) {
+      alert("Cannot submit review decision: Missing or invalid review thread identifier.");
+      return;
+    }
+
     try {
       const obligationData = {
         requirement: item.requirement,
@@ -62,7 +75,7 @@ export default function ReviewWorkspace() {
       setQueue(prev => prev.filter(q => q.id !== id));
     } catch (err) {
       console.error(err);
-      alert("Failed to submit review decision.");
+      alert("Failed to submit review decision: " + (err.message || "Make sure backend is running"));
     }
   };
 
@@ -273,23 +286,40 @@ export default function ReviewWorkspace() {
                 </div>
               </div>
 
+              {!item.isValidId && (
+                <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">
+                  ⚠️ Invalid or missing review thread ID. Decision submission is disabled for this item.
+                </div>
+              )}
+
               {/* Action Buttons */}
               <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-neutral-100 pt-4">
                 <button
                   onClick={() => handleAction(item.id, "approve")}
-                  className="rounded-full bg-emerald-500 px-6 py-2.5 text-xs font-semibold text-white transition-all hover:bg-emerald-600 shadow-sm"
+                  disabled={!item.isValidId}
+                  className={`rounded-full px-6 py-2.5 text-xs font-semibold text-white transition-all shadow-sm ${
+                    !item.isValidId ? "bg-neutral-300 cursor-not-allowed opacity-50" : "bg-emerald-500 hover:bg-emerald-600"
+                  }`}
                 >
                   ✓ Approve Translation
                 </button>
                 <button
                   onClick={() => handleAction(item.id, "edit")}
-                  className="rounded-full bg-violet-600 px-6 py-2.5 text-xs font-semibold text-white transition-all hover:bg-violet-700 shadow-sm"
+                  disabled={!item.isValidId}
+                  className={`rounded-full px-6 py-2.5 text-xs font-semibold text-white transition-all shadow-sm ${
+                    !item.isValidId ? "bg-neutral-300 cursor-not-allowed opacity-50" : "bg-violet-600 hover:bg-violet-700"
+                  }`}
                 >
                   Save & Apply Amendments
                 </button>
                 <button
                   onClick={() => handleAction(item.id, "reject")}
-                  className="rounded-full border border-neutral-200 bg-white px-6 py-2.5 text-xs font-semibold text-neutral-500 transition-all hover:bg-neutral-50 hover:text-neutral-700"
+                  disabled={!item.isValidId}
+                  className={`rounded-full border px-6 py-2.5 text-xs font-semibold transition-all ${
+                    !item.isValidId
+                      ? "border-neutral-200 bg-neutral-100 text-neutral-400 cursor-not-allowed opacity-50"
+                      : "border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50 hover:text-neutral-700"
+                  }`}
                 >
                   ✗ Discard Requirement
                 </button>

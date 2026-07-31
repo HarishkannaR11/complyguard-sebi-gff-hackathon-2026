@@ -4,6 +4,10 @@ import datetime
 
 from app.db.database import Base
 
+# Sentinel values for source_type on Obligation
+SOURCE_REGULATORY = "regulatory"
+SOURCE_COMPANY = "company"
+
 
 class Circular(Base):
     __tablename__ = "circulars"
@@ -41,6 +45,9 @@ class Obligation(Base):
     deadline_rule = Column(String)
     intermediary = Column(String, default="stockbroker")
     status = Column(String, default="active")
+    # Discriminator: 'regulatory' = extracted from SEBI circular
+    #                'company'    = imported from company CSV
+    source_type = Column(String, default=SOURCE_REGULATORY)
 
     # Lineage fields (V2 Upgrade)
     previous_obligation_id = Column(String, ForeignKey("obligations.id"), nullable=True)
@@ -138,3 +145,31 @@ class ReviewQueue(Base):
     confidence = Column(Float, nullable=True)
     extracted_obligation = Column(JSON, nullable=True)
     status = Column(String, default="pending")
+
+
+class CompanyObligation(Base):
+    """Company-side obligations imported from CSV."""
+    __tablename__ = "company_obligations"
+    id = Column(String, primary_key=True)
+    requirement = Column(Text)
+    frequency = Column(String)
+    evidence_type = Column(String)
+    deadline_rule = Column(String, nullable=True)
+    intermediary = Column(String, default="stockbroker")
+    owner = Column(String, default="compliance")
+    due_date = Column(DateTime, nullable=True)
+    status = Column(String, default="open")  # open / met
+    imported_at = Column(DateTime, default=datetime.datetime.utcnow)
+    source_file = Column(String, nullable=True)
+
+
+class GapResult(Base):
+    """Results of a Gap Engine run comparing regulatory vs company obligations."""
+    __tablename__ = "gap_results"
+    id = Column(String, primary_key=True)
+    regulatory_obligation_id = Column(String, nullable=True)
+    company_obligation_id = Column(String, nullable=True)
+    # gap_type: 'missing' | 'modified' | 'extra' | 'met'
+    gap_type = Column(String)
+    detail = Column(Text, nullable=True)
+    computed_at = Column(DateTime, default=datetime.datetime.utcnow)
