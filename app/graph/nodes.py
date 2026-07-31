@@ -35,7 +35,7 @@ def parse_json_robust(content: str) -> dict:
             raise ValueError(f"Failed to decode LLM JSON: {raw_json}. Error: {str(e)}")
 
 from app.db.database import SessionLocal
-from app.db.models import AuditTrail, EvidenceLog, Obligation, Task
+from app.db.models import AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause, Evidence, Deadline, ApplicableEntity
 from app.embeddings.embedder import embed_texts
 from app.embeddings.qdrant_client import ensure_collection, get_client, search, upsert_chunks
 
@@ -388,6 +388,23 @@ def mapper_node(state: ComplianceState) -> dict:
         obligation.frequency = obligation_data["frequency"]
         obligation.evidence_type = obligation_data["evidence_type"]
         obligation.deadline_rule = obligation_data["deadline_rule"]
+        
+        # Lineage attributes
+        obligation.origin_circular_id = state["circular_id"]
+        obligation.clause_uuid = state.get("clause_uuid")
+        
+        diff_status = state.get("diff_status")
+        matched_id = None
+        if state.get("similarity_match"):
+            matched_id = state["similarity_match"]["payload"].get("obligation_id")
+            
+        if diff_status == "amended" and matched_id:
+            obligation.previous_obligation_id = matched_id
+            obligation.amended_obligation_id = matched_id
+        elif diff_status == "superseded" and matched_id:
+            obligation.previous_obligation_id = matched_id
+            obligation.superseded_obligation_id = matched_id
+
         db.flush()
 
         due_date_value = resolve_due_date(obligation_data.get("deadline_rule"), date.today())
@@ -395,6 +412,8 @@ def mapper_node(state: ComplianceState) -> dict:
             dt_datetime.combine(due_date_value, dt_datetime.min.time())
             if due_date_value else None
         )
+        
+        # Backwards compatible Task
         task = Task(
             id=str(uuid.uuid4()),
             obligation_id=obligation.id,
@@ -402,6 +421,24 @@ def mapper_node(state: ComplianceState) -> dict:
             due_date=task_due_date,
         )
         db.add(task)
+        
+        # Parallel V2 Deadline
+        deadline = Deadline(
+            id=str(uuid.uuid4()),
+            due_date=task_due_date,
+            status="open",
+            obligation_id=obligation.id
+        )
+        db.add(deadline)
+
+        # Parallel V2 ApplicableEntity
+        entity = ApplicableEntity(
+            id=str(uuid.uuid4()),
+            entity_name=obligation.intermediary or "stockbroker",
+            obligation_id=obligation.id
+        )
+        db.add(entity)
+
         db.commit()
 
         obligation_id, task_id = obligation.id, task.id

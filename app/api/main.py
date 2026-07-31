@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 
 from app.api.routes_review import router as review_router
 from app.db.database import Base, engine, get_db
-import app.db.models  # noqa: F401 — registers all tables on Base.metadata before create_all
-from app.db.models import AuditTrail, EvidenceLog, Obligation, Task
+import app.db.models  # noqa: F401
+from app.db.models import AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause, Evidence, Deadline, ApplicableEntity
 from app.embeddings.qdrant_client import find_by_obligation_id, get_client
 from app.graph.build_graph import build_graph
 from app.ingestion.clause_splitter import split_into_clauses
@@ -30,6 +30,8 @@ from app.services.supersession import mark_superseded_obligations
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.db.migrate_v2 import run_migrations
+    run_migrations()
     Base.metadata.create_all(bind=engine)
     yield
 
@@ -80,6 +82,42 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
             "results": [],
         }
 
+    # V2 Lineage pre-population
+    try:
+        import datetime
+        circular = db.query(Circular).filter(Circular.id == circular_id).first()
+        if not circular:
+            circular = Circular(id=circular_id, title=circular_id, issue_date=datetime.datetime.utcnow())
+            db.add(circular)
+            db.commit()
+
+        clause_uuid_map = {}
+        section_map = {}
+        
+        for idx, chunk in enumerate(chunks):
+            section_title = chunk.get("section") or "General"
+            if section_title not in section_map:
+                sec_uuid = str(uuid.uuid4())
+                db.add(Section(id=sec_uuid, title=section_title, circular_id=circular_id))
+                db.commit()
+                section_map[section_title] = sec_uuid
+                
+            sec_id = section_map[section_title]
+            clause_uuid = str(uuid.uuid4())
+            db.add(Clause(
+                id=clause_uuid,
+                clause_number=chunk.get("clause") or f"{idx}",
+                text=chunk["text"],
+                section_id=sec_id
+            ))
+            db.commit()
+            clause_uuid_map[idx] = clause_uuid
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Lineage DB pre-population failed: {exc}"
+        ) from exc
+
     graph = build_graph()
     results = []
     matched_obligation_ids = set()
@@ -102,6 +140,7 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
             "clause_num": chunk.get("clause"),
             "parent_clause": chunk.get("parent"),
             "block_type": chunk.get("type"),
+            "clause_uuid": clause_uuid_map.get(i),
         }
         config = {"configurable": {"thread_id": f"{circular_id}:{clause_id}"}}
 
@@ -304,6 +343,16 @@ def create_evidence(payload: EvidenceIn, db: Session = Depends(get_db)):
         )
     entry = EvidenceLog(id=str(uuid.uuid4()), task_id=task.id, file_ref=payload.description)
     db.add(entry)
+    
+    # Parallel V2 Evidence row
+    evidence_row = Evidence(
+        id=entry.id,
+        file_ref=payload.description,
+        submitted_at=entry.submitted_at,
+        obligation_id=payload.obligation_id
+    )
+    db.add(evidence_row)
+    
     db.commit()
     db.refresh(entry)
     return {

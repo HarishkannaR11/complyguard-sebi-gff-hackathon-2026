@@ -242,15 +242,22 @@ pair against `DATABASE_URL` (default `postgresql://regops:regops@localhost:5433/
 `get_db()` is the FastAPI dependency; every non-FastAPI call site (graph nodes, services) opens its
 own `SessionLocal()` and closes it in a `finally` block.
 
-**`app/db/models.py`** — imports `Base` from `database.py` (not a second `declarative_base()`) so
-`Base.metadata.create_all()` in `app/api/main.py`'s lifespan hook picks up all four tables:
+**`app/db/migrate_v2.py`** — Handles dynamic database migrations during backend initialization, executing ALTER statements to add missing version-tracking columns (`previous_obligation_id`, `amended_obligation_id`, `superseded_obligation_id`, `origin_circular_id`, `clause_uuid`) to the `obligations` table without corrupting historical database assets.
+
+**`app/db/models.py`** — Imports `Base` from `database.py` and registers both legacy tables (for backwards compatibility) and the new lineage nodes. SQLAlchemy `relationship` mappings are configured to bind the regulatory graph:
 
 | Table | Purpose | Key columns |
 |---|---|---|
-| `obligations` | one row per distinct compliance requirement | `id`, `clause_id`, `requirement`, `frequency`, `evidence_type`, `deadline_rule`, `status` (active/superseded) |
-| `tasks` | the trackable instance of an obligation | `id`, `obligation_id` (FK), `owner`, `due_date`, `status` (pending/met/overdue) |
-| `evidence_log` | proof attached against a task | `id`, `task_id` (FK), `file_ref`, `submitted_at` |
-| `audit_trail` | immutable, hash-chained action log | `id`, `thread_id`, `node_name`, `action` (JSON), `actor`, `timestamp`, `prev_hash`, `hash` |
+| `circulars` | Tracks circular documents | `id`, `title`, `issue_date` |
+| `sections` | Sections inside a circular | `id`, `title`, `circular_id` (FK) |
+| `clauses` | Segmented clause layout blocks | `id`, `clause_number`, `text`, `section_id` (FK) |
+| `obligations` | Version-controlled compliance obligations | `id`, `clause_id`, `requirement`, `frequency`, `evidence_type`, `deadline_rule`, `intermediary`, `status`, plus version lineage FKs (`previous_obligation_id`, `amended_obligation_id`, `superseded_obligation_id`, `origin_circular_id`, `clause_uuid`) |
+| `deadlines` | Tracks obligation deadlines | `id`, `due_date`, `status`, `obligation_id` (FK) |
+| `evidence` | Proof attached to a lineage obligation | `id`, `file_ref`, `submitted_at`, `obligation_id` (FK) |
+| `applicable_entities` | Target intermediary scopes | `id`, `entity_name`, `obligation_id` (FK) |
+| `tasks` | Leg. trackable task (backwards compatible) | `id`, `obligation_id` (FK), `owner`, `due_date`, `status` |
+| `evidence_log` | Leg. proof log (backwards compatible) | `id`, `task_id` (FK), `file_ref`, `submitted_at` |
+| `audit_trail` | Hash-chained action log | `id`, `thread_id`, `node_name`, `action` (JSON), `actor`, `timestamp`, `prev_hash`, `hash` |
 
 **Audit hash chain**: `compute_audit_hash(prev_hash, action, timestamp) = sha256(prev_hash +
 json.dumps(action, sort_keys=True) + timestamp.isoformat())`. Every `_write_audit_entry()` call reads

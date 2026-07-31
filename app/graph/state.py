@@ -33,3 +33,6 @@ class ComplianceState(TypedDict):
     validation_warnings: Optional[List[str]]
     overall_confidence: Optional[float]
     extraction_retries: Optional[int]
+
+    # Lineage fields (V2 Feature 4)
+    clause_uuid: Optional[str]
