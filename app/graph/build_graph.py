@@ -33,6 +33,8 @@ def _get_checkpointer():
 
 
 def route_after_diff(state: ComplianceState) -> str:
+    if state.get("confidence", 1.0) < 0.7:
+        return "human_review"
     if state["diff_status"] in ("amended", "superseded"):
         return "human_review"
     if state["diff_status"] == "unchanged":

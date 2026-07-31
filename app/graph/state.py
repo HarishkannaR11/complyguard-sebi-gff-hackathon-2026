@@ -13,3 +13,11 @@ class ComplianceState(TypedDict):
     evidence_status: Literal["present", "missing", "invalid", None]
     human_decision: Optional[str]
     audit_log: List[dict]
+    
+    # Structure metadata fields (V2 Upgrade)
+    confidence: Optional[float]
+    page: Optional[int]
+    section: Optional[str]
+    clause_num: Optional[str]
+    parent_clause: Optional[str]
+    block_type: Optional[str]

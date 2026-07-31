@@ -23,6 +23,7 @@ from app.embeddings.qdrant_client import find_by_obligation_id, get_client
 from app.graph.build_graph import build_graph
 from app.ingestion.clause_splitter import split_into_clauses
 from app.ingestion.pdf_cleaner import extract_and_clean
+from app.ingestion.hybrid_parser import parse_pdf_structured
 from app.services.gap_engine import get_gaps, update_all_task_statuses
 from app.services.supersession import mark_superseded_obligations
 
@@ -61,7 +62,7 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
     circular_id = os.path.splitext(file.filename)[0]
 
     try:
-        cleaned_text = extract_and_clean(file_path)
+        chunks = parse_pdf_structured(file_path)
     except Exception as exc:
         # Fail fast here, before build_graph() ever runs, so a bad/unreadable
         # PDF doesn't pay the cost of opening a real Postgres checkpointer
@@ -70,8 +71,7 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
             status_code=422, detail=f"PDF cleaning failed: {exc}"
         ) from exc
 
-    clauses = split_into_clauses(cleaned_text)
-    if not clauses:
+    if not chunks:
         return {
             "status": "success",
             "filename": file.filename,
@@ -84,13 +84,24 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
     results = []
     matched_obligation_ids = set()
 
-    for i, clause_text in enumerate(clauses):
+    for i, chunk in enumerate(chunks):
         clause_id = f"clause-{i}"
+        
+        heading = f"Clause {chunk['clause']}: {chunk['section']}" if chunk.get("clause") else chunk.get("section")
+        if not heading:
+            heading = f"Clause {i}"
+
         state = {
             "circular_id": circular_id,
             "clause_id": clause_id,
-            "raw_clause": clause_text,
-            "heading": None,
+            "raw_clause": chunk["text"],
+            "heading": heading,
+            "confidence": chunk.get("confidence", 1.0),
+            "page": chunk.get("page"),
+            "section": chunk.get("section"),
+            "clause_num": chunk.get("clause"),
+            "parent_clause": chunk.get("parent"),
+            "block_type": chunk.get("type"),
         }
         config = {"configurable": {"thread_id": f"{circular_id}:{clause_id}"}}
 
@@ -154,7 +165,7 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
         "status": "success",
         "filename": file.filename,
         "circular_id": circular_id,
-        "clauses_processed": len(clauses),
+        "clauses_processed": len(chunks),
         "results": results,
         "superseded_obligation_ids": superseded,
         "supersession_skipped_due_to_errors": had_errors,

@@ -16,25 +16,26 @@ system as it exists now, not the history of how it got there.
   PDF file
      │
      ▼
-┌─────────────┐    ┌──────────────────┐    ┌───────────────────────────────────────────────┐
-│ pdf_cleaner │───▶│ clause_splitter  │───▶│  for each clause: run the LangGraph state       │
-│  (PyMuPDF)  │    │ (regex chunker)  │    │  machine (app/graph/build_graph.py)              │
-└─────────────┘    └──────────────────┘    └───────────────────────────────────────────────┘
-                                                              │
-                                              ┌───────────────┴────────────────┐
-                                              │  per-clause result:            │
-                                              │  processed / pending_review /  │
-                                              │  error                         │
-                                              └───────────────┬────────────────┘
-                                                              ▼
-                                        ┌──────────────────────────────────────────┐
-                                        │ mark_superseded_obligations()             │
-                                        │ (app/services/supersession.py, batch-level,│
-                                        │  only if zero clauses errored)            │
-                                        └──────────────────────────────────────────┘
-                                                              │
-                                                              ▼
-                                        response: {results[], superseded_obligation_ids[]}
+┌──────────────────┐
+│  hybrid_parser   │───▶  for each structured chunk: run the LangGraph state
+│  (PyMuPDF / block │      machine (app/graph/build_graph.py)
+│  & table extraction)
+└──────────────────┘
+                                             │
+                             ┌───────────────┴────────────────┐
+                             │  per-chunk result:             │
+                             │  processed / pending_review /  │
+                             │  error                         │
+                             └───────────────┬────────────────┘
+                                             ▼
+                                       ┌──────────────────────────────────────────┐
+                                       │ mark_superseded_obligations()             │
+                                       │ (app/services/supersession.py, batch-level,│
+                                       │  only if zero clauses errored)            │
+                                       └──────────────────────────────────────────┘
+                                             │
+                                             ▼
+                                       response: {results[], superseded_obligation_ids[]}
 ```
 
 Everything downstream of upload (`GET /obligations`, `GET /gaps`, `POST /evidence`,
@@ -42,47 +43,37 @@ Everything downstream of upload (`GET /obligations`, `GET /gaps`, `POST /evidenc
 populated and the Qdrant collection it upserted into. There is no background worker — `POST /upload`
 runs the whole per-clause pipeline synchronously inside the request.
 
-## 2. Stage 1 — PDF ingestion (`app/ingestion/pdf_cleaner.py`)
+## 2. Hybrid Document Parsing (`app/ingestion/hybrid_parser.py`)
 
-Entry point: `extract_and_clean(pdf_path) -> str`.
+Entry point: `parse_pdf_structured(pdf_path) -> list[dict]`.
 
-1. `extract_pages()` — opens the PDF with PyMuPDF (`fitz`) and pulls raw text per page. A page whose
-   extracted text is under 20 characters is flagged with a `[WARN]` print as likely scanned/image
-   content needing OCR (OCR itself is not implemented — this is a diagnostic signal only).
-2. Per page, in order:
-   - `strip_headers_footers()` — regex-strips repeating "Page X of Y" footers, SEBI circular reference
-     codes (`SEBI/HO/...`), and trailing "Circular No.:" / "Ref. No.:" labels that appear on every
-     page and are not clause content.
-   - `dehyphenate()` — rejoins words split across a line-wrap (`segrega-\ntion` → `segregation`).
-   - `normalize_whitespace()` — collapses non-breaking spaces, repeated spaces/tabs, and 3+ blank
-     lines down to at most one blank line.
-3. Pages are joined with a blank line, then `remove_boilerplate()` strips standard legal preamble
-   patterns (e.g. "In exercise of the powers conferred...") that are never obligations and would
-   otherwise get chunked and sent to the LLM as if they were a clause.
+This module acts as the primary layout-aware structure layer, extracting sections, subsections, clause numbering, parent-child relationships, page numbers, and tabular grids.
 
-`qa_spot_check()` is a manual debugging helper (prints the first N cleaned paragraphs over 40 chars) —
-not called by the pipeline, only useful when running `pdf_cleaner.py` directly as a script to eyeball
-cleaning quality before ingesting.
-
-**Why this matters:** skipping this stage corrupts clause boundaries (the splitter in stage 2 depends
-on clean line starts) and pollutes embeddings with repeated header noise, which would degrade the
-similarity search in stage 4.
-
-## 3. Stage 2 — Clause splitting (`app/ingestion/clause_splitter.py`)
-
-Entry point: `split_into_clauses(text) -> list[str]`.
-
-Primary strategy: a regex, `^(?=\d+(?:\.\d+)*\.?\s+\S)` (multiline), matches the start of any line
-that begins with a numbered clause label (`1.`, `2.3`, `4.1.2` …) followed by content, and splits the
-text at those boundaries. This is what SEBI circulars' numbered-clause structure is built around.
-
-Fallback: if that regex produces one piece or fewer (i.e. the document has no numbered-clause
-structure the regex recognizes), split on blank-line-separated paragraphs instead, so the pipeline
-degrades gracefully rather than treating an entire circular as one giant "clause."
-
-Each returned clause is later assigned an index-based id (`clause-0`, `clause-1`, …) by the caller
-(`app/api/main.py`'s `/upload` handler, or `scripts/run_ingest.py`) — the splitter itself is unaware
-of ids.
+1. **Table Extraction**:
+   - Opens the PDF with PyMuPDF and finds tables using `page.find_tables()`.
+   - Table grids are extracted using `tab.extract()` and formatted into GFM (GitHub Flavored Markdown) representation to preserve grid structures.
+   - The bounding box (`bbox`) of each table is kept to ensure their content is skipped in subsequent text block extraction, preventing duplicate reads.
+2. **Text Block Layout Extraction**:
+   - Uses PyMuPDF's block parser `page.get_text("blocks")` which yields reading-order sorted coordinate blocks.
+   - Filters out text blocks that intersect with the bounding box of any detected tables.
+   - Normalizes text spacing and removes boilerplate preamble text using routines defined in [pdf_cleaner.py](file:///home/krisharish/Documents/complyguard-sebi-gff-hackathon-2026/app/ingestion/pdf_cleaner.py).
+3. **Hierarchy & Metadata Mapping**:
+   - Identifies structural headers:
+     - **Annexures**: Matched using regex e.g. `^Annexure\s+[A-Z0-9]+`.
+     - **Sections**: Matched using Roman numerals `^([I|V|X|L|C|D|M]+)\.`.
+     - **Subsections**: Matched using alphabetical items `^([A-Z])\.`.
+     - **Clauses**: Matched using numeric hierarchies `^(\d+(?:\.\d+)*)\.?\s+\S`.
+   - Computes parent-child relations: a dotted decimal clause number (e.g. `3.2.1`) has its parent mapped as its prefix (e.g. `3.2`).
+4. **Segmentation Confidence Score**:
+   - Assigns a confidence value to each chunk to enforce reliability guidelines:
+     - Clause numbers (`0.95`)
+     - Table grids (`0.90`)
+     - Structural boundaries/annexures (`0.90`)
+     - Continuation text blocks under an active clause (`0.85`)
+     - Unstructured body text / fallback splits (`0.50`)
+     - Orphans/short fragments (`0.65` / `0.60`)
+5. **Legacy Fallback**:
+   - If PyMuPDF throws errors (e.g. corrupted PDF binary, or mock test streams containing dummy headers), the parser catches the error and runs the legacy `extract_and_clean` + `split_into_clauses` routines, packaging them into uniform dictionary structures (with low confidence to flag them for human review).
 
 ## 4. Stage 3 — The per-clause LangGraph pipeline
 
