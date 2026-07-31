@@ -38,6 +38,7 @@ from app.db.database import SessionLocal
 from app.db.models import AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause, Evidence, Deadline, ApplicableEntity, ReviewQueue
 from app.embeddings.embedder import embed_texts
 from app.embeddings.qdrant_client import ensure_collection, get_client, search, upsert_chunks
+from app.services.metrics import metrics_collector
 
 from .state import ComplianceState
 
@@ -49,13 +50,17 @@ FREQUENCY_DAYS = {
 
 
 def chunker_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering chunker stage for clause {state.get('clause_id')}...")
     raw_clause = state["raw_clause"].strip()
     heading = state.get("heading") or raw_clause.splitlines()[0][:80].strip()
     return {"raw_clause": raw_clause, "heading": heading}
 
 
 def embedder_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering embedder stage for clause {state.get('clause_id')}...")
+    start = time.time()
     embedding = embed_texts([state["raw_clause"]])[0]
+    metrics_collector.record_embedding_latency(time.time() - start)
     return {"embedding": embedding}
 
 
@@ -105,6 +110,7 @@ Clause to analyze:
 
 
 def extractor_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering extractor stage for clause {state.get('clause_id')}...")
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY environment variable is not set")
@@ -113,6 +119,7 @@ def extractor_node(state: ComplianceState) -> dict:
     prompt = EXTRACTION_PROMPT.format(clause_text=state["raw_clause"])
 
     response = None
+    start = time.time()
     for attempt in range(MAX_RETRIES):
         try:
             response = client.chat.completions.create(
@@ -126,6 +133,7 @@ def extractor_node(state: ComplianceState) -> dict:
             if attempt == MAX_RETRIES - 1:
                 raise
             time.sleep(1.5 * (attempt + 1))
+    metrics_collector.record_llm_latency(time.time() - start)
 
     content = response.choices[0].message.content
     obligation = parse_json_robust(content)
@@ -191,6 +199,7 @@ class ExtractedObligation(BaseModel):
 
 
 def validation_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering validation stage for clause {state.get('clause_id')}...")
     extracted = state.get("extracted_obligation")
     errors = []
     warnings = []
@@ -217,6 +226,12 @@ def validation_node(state: ComplianceState) -> dict:
     validation_status = "passed" if not errors else "failed"
     retries = state.get("extraction_retries") or 0
     next_retries = retries + 1 if validation_status == "failed" else retries
+    
+    # Track metrics
+    if validation_status == "failed":
+        metrics_collector.increment_validation_failures()
+        metrics_collector.increment_retry_count()
+    metrics_collector.record_confidence(overall_conf)
     
     return {
         "validation_status": validation_status,
@@ -260,11 +275,14 @@ def _normalize(text: str) -> str:
 
 
 def differ_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering differ stage for clause {state.get('clause_id')}...")
     client = get_client()
     ensure_collection(client, vector_size=len(state["embedding"]))
     
     # Stage 1: Retrieve top-3 candidates (limit = 3)
+    start_search = time.time()
     hits = search(client, state["embedding"], limit=3)
+    metrics_collector.record_vector_search_latency(time.time() - start_search)
     
     if not hits:
         return {
@@ -297,6 +315,7 @@ def differ_node(state: ComplianceState) -> dict:
     )
     
     response = None
+    start_llm = time.time()
     for attempt in range(MAX_RETRIES):
         try:
             response = client_groq.chat.completions.create(
@@ -310,6 +329,7 @@ def differ_node(state: ComplianceState) -> dict:
             if attempt == MAX_RETRIES - 1:
                 raise
             time.sleep(1.5 * (attempt + 1))
+    metrics_collector.record_llm_latency(time.time() - start_llm)
             
     content = response.choices[0].message.content
     comparison = parse_json_robust(content)
@@ -366,6 +386,7 @@ def differ_node(state: ComplianceState) -> dict:
 
 
 def mapper_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering mapper stage for clause {state.get('clause_id')}...")
     if state.get("human_decision") == "reject" or state.get("diff_status") == "unchanged":
         return {}
 
@@ -467,6 +488,7 @@ def mapper_node(state: ComplianceState) -> dict:
 
 
 def evidence_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering evidence check stage for clause {state.get('clause_id')}...")
     task_info = state.get("task")
     if not task_info:
         return {"evidence_status": "missing"}
@@ -484,6 +506,7 @@ def evidence_node(state: ComplianceState) -> dict:
 
 
 def gap_engine_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering gap engine stage for clause {state.get('clause_id')}...")
     task_info = state.get("task")
     if not task_info:
         return {}
@@ -557,6 +580,7 @@ def generate_text_diff(old_text: str, new_text: str) -> str:
 
 
 def human_review_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering human review stage for clause {state.get('clause_id')}...")
     prev_text = None
     similarity_match = state.get("similarity_match")
     if similarity_match:
@@ -645,6 +669,7 @@ def human_review_node(state: ComplianceState) -> dict:
 
 
 def finalize_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Finalizing pipeline for clause {state.get('clause_id')}...")
     _write_audit_entry(
         thread_id=f"{state['circular_id']}:{state['clause_id']}",
         node_name="finalize",
