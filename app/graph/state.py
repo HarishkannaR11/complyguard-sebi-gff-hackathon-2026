@@ -26,3 +26,10 @@ class ComplianceState(TypedDict):
     diff_changes: Optional[List[str]]
     diff_reason: Optional[str]
     diff_confidence: Optional[float]
+
+    # Validation and retry fields (V2 Feature 3)
+    validation_status: Optional[str]
+    validation_errors: Optional[List[str]]
+    validation_warnings: Optional[List[str]]
+    overall_confidence: Optional[float]
+    extraction_retries: Optional[int]

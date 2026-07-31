@@ -148,20 +148,17 @@ handle that later lets a paused run be resumed by exactly matching thread.
 **`embedder_node`** — calls `app.embeddings.embedder.embed_texts([raw_clause])[0]` (see §5) to produce
 a 768-dim embedding vector for the clause.
 
-**`extractor_node`** — calls Groq (`llama-3.3-70b-versatile` by default, overridable via `GROQ_MODEL`)
-with a fixed prompt (`EXTRACTION_PROMPT`) asking for one JSON object:
-```json
-{
-  "requirement": "Clear description of what must be done",
-  "frequency": "one-time | monthly | quarterly | annual | ...",
-  "evidence_type": "What proof is needed",
-  "deadline_rule": "ISO date, a frequency keyword, or null"
-}
-```
-`temperature=0`, `max_tokens=800`. Retries up to `MAX_RETRIES = 3` times with `1.5 * attempt` second
-backoff on `groq.APIConnectionError` only (other errors propagate immediately). The response is
-stripped of Markdown code fences and the first/last `{`/`}` are used to isolate the JSON object before
-`json.loads`, tolerating models that wrap JSON in prose despite the instruction not to.
+**`extractor_node`** — calls Groq (`llama-3.3-70b-versatile` by default, overridable via `GROQ_MODEL`) with a fixed prompt (`EXTRACTION_PROMPT`) asking for structured JSON content including confidence ratings (`deadline_confidence`, `entity_confidence`, `evidence_confidence`, `overall_confidence`).
+
+**`validation_node`** — read-only. Parses the LLM's raw response against the `ExtractedObligation` Pydantic model:
+- **Field constraints**: Checks that `requirement`, `frequency`, and `evidence_type` are populated and non-empty.
+- **Date format verification**: Ensures `deadline_rule` is a valid ISO date (`YYYY-MM-DD`), standard frequency keyword, or null.
+- **Frequency validation**: Asserts that `frequency` matches recognized values (`one-time`, `monthly`, `quarterly`, `annual`).
+- **Confidence thresholds**:
+  - `>= 0.95`: Automatically approved (no validation warnings).
+  - `0.80 - 0.95`: Continues automatically but registers a validation warning.
+  - `< 0.80`: Registers a validation error and flags the state to force `human_review` downstream.
+- **Retry behavior**: If validation fails (due to JSON syntax, missing fields, invalid date/frequency, or confidence `< 80%`) and the retry counter is `<= 1`, the graph loops back to the `extractor_node` to retry once. If it fails a second time, it proceeds to the vector check but routes to `human_review` at the `differ` transition.
 
 **`differ_node`** — read-only. Implements the two-stage semantic comparison pipeline:
 - **Stage 1 (Retrieval)**: Queries the Qdrant collection for the top-3 nearest candidate clauses based on the embedding of the current clause. If no candidates are found, it skips the LLM step and classifies it as `"new"`.

@@ -89,9 +89,12 @@ Return the result strictly as a JSON object matching this schema:
     "requirement": "Clear description of what must be done",
     "frequency": "How often this recurs (e.g. one-time, monthly, quarterly, annual)",
     "evidence_type": "What proof is needed to show compliance",
-    "deadline_rule": "An ISO date YYYY-MM-DD if the clause gives a specific calendar
-        date, a recognized frequency keyword (monthly/quarterly/annual) if it recurs
-        on a schedule with no fixed date, or null if open-ended with no deadline"
+    "deadline_rule": "An ISO date YYYY-MM-DD if the clause gives a specific calendar date, a recognized frequency keyword (monthly/quarterly/annual) if it recurs on a schedule with no fixed date, or null if open-ended with no deadline",
+    
+    "deadline_confidence": <float confidence score for deadline extraction between 0.0 and 1.0>,
+    "entity_confidence": <float confidence score for target entity identification between 0.0 and 1.0>,
+    "evidence_confidence": <float confidence score for evidence type extraction between 0.0 and 1.0>,
+    "overall_confidence": <float overall extraction confidence score between 0.0 and 1.0>
 }}
 
 Do not include any other text in your response, only the JSON object.
@@ -127,6 +130,101 @@ def extractor_node(state: ComplianceState) -> dict:
     content = response.choices[0].message.content
     obligation = parse_json_robust(content)
     return {"extracted_obligation": obligation}
+
+
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, List
+
+
+class ExtractedObligation(BaseModel):
+    requirement: str
+    frequency: str
+    evidence_type: str
+    deadline_rule: Optional[str] = None
+    
+    deadline_confidence: float
+    entity_confidence: float
+    evidence_confidence: float
+    overall_confidence: float
+    
+    @field_validator("requirement", "frequency", "evidence_type")
+    @classmethod
+    def check_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty or whitespace only")
+        return v.strip()
+        
+    @field_validator("frequency")
+    @classmethod
+    def validate_frequency(cls, v: str) -> str:
+        freqs = {"one-time", "monthly", "quarterly", "annual"}
+        if v.lower().strip() not in freqs:
+            raise ValueError(f"Invalid frequency: {v}. Must be one of {freqs}")
+        return v.lower().strip()
+        
+    @field_validator("deadline_rule")
+    @classmethod
+    def validate_deadline_rule(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        v_clean = v.lower().strip()
+        if v_clean in {"one-time", "monthly", "quarterly", "annual"}:
+            return v_clean
+        try:
+            date.fromisoformat(v_clean)
+            return v_clean
+        except ValueError:
+            raise ValueError(f"Invalid deadline rule: {v}. Must be an ISO date or frequency keyword")
+
+    @field_validator("deadline_confidence", "entity_confidence", "evidence_confidence", "overall_confidence", mode="before")
+    @classmethod
+    def normalize_confidence(cls, v):
+        if v is None:
+            return 0.0
+        try:
+            val = float(v)
+            if val > 1.0:
+                val = val / 100.0
+            return max(0.0, min(1.0, val))
+        except (ValueError, TypeError):
+            raise ValueError(f"Confidence score must be a number: {v}")
+
+
+def validation_node(state: ComplianceState) -> dict:
+    extracted = state.get("extracted_obligation")
+    errors = []
+    warnings = []
+    overall_conf = 0.0
+    
+    if not extracted:
+        errors.append("No obligation extracted by LLM.")
+    else:
+        try:
+            validated = ExtractedObligation(**extracted)
+            overall_conf = validated.overall_confidence
+            
+            if overall_conf < 0.80:
+                errors.append(f"Overall confidence {overall_conf:.2f} is below 80% threshold.")
+            elif overall_conf < 0.95:
+                warnings.append(f"Warning: Overall confidence {overall_conf:.2f} is between 80% and 95%.")
+        except Exception as e:
+            if hasattr(e, "errors"):
+                for err in e.errors():
+                    errors.append(f"Field '{err['loc'][0]}': {err['msg']}")
+            else:
+                errors.append(str(e))
+                
+    validation_status = "passed" if not errors else "failed"
+    retries = state.get("extraction_retries") or 0
+    next_retries = retries + 1 if validation_status == "failed" else retries
+    
+    return {
+        "validation_status": validation_status,
+        "validation_errors": errors,
+        "validation_warnings": warnings,
+        "overall_confidence": overall_conf,
+        "extraction_retries": next_retries
+    }
 
 
 COMPARISON_PROMPT = """
