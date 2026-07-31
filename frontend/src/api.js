@@ -40,6 +40,28 @@ export const getReadiness = async () => {
     }
 };
 
+export const getWorkflowState = async () => {
+    try {
+        const response = await fetch(`${API_URL}/workflow-state`);
+        if (!response.ok) return { state: 'IDLE', can_upload: true };
+        return response.json();
+    } catch {
+        return { state: 'IDLE', can_upload: true };
+    }
+};
+
+export const finishWorkflow = async () => {
+    const response = await fetch(`${API_URL}/workflow/finish`, { method: 'POST' });
+    if (!response.ok) throw new Error('Failed to complete workflow');
+    return response.json();
+};
+
+export const startComplianceWorkflow = async () => {
+    const response = await fetch(`${API_URL}/workflow/start-compliance`, { method: 'POST' });
+    if (!response.ok) throw new Error('Failed to start compliance workflow');
+    return response.json();
+};
+
 export const getGaps = async () => {
     const response = await fetch(`${API_URL}/gaps`);
     if (response.status === 400) {

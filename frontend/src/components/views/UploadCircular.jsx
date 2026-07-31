@@ -1,6 +1,6 @@
-import { useState, useRef } from "react";
+import { useRef, useState } from "react";
+import { importObligationsCsv, submitReviewDecision, uploadCircular } from "../../api";
 import { CIRCULAR } from "../../data/mockData";
-import { uploadCircular, importObligationsCsv, submitReviewDecision } from "../../api";
 
 const PROCESSING_STEPS = [
   "Parsing PDF text...",
@@ -67,7 +67,7 @@ export default function UploadCircular({ onComplete, onCsvImportComplete }) {
       };
       decision = "amend:" + JSON.stringify(payload);
     }
-    
+
     try {
       await submitReviewDecision(threadId, decision);
       const remaining = pendingReviews.filter(p => p.threadId !== threadId);
@@ -87,7 +87,7 @@ export default function UploadCircular({ onComplete, onCsvImportComplete }) {
     setProcessing(true);
     setStepIndex(0);
     setPendingReviews([]);
-    
+
     PROCESSING_STEPS.forEach((_, i) => {
       const t = setTimeout(() => setStepIndex(i), (i + 1) * 800);
       timeouts.current.push(t);
@@ -96,7 +96,7 @@ export default function UploadCircular({ onComplete, onCsvImportComplete }) {
     try {
       const fileToUpload = file || (await fetchSampleFile());
       const data = await uploadCircular(fileToUpload);
-      
+
       const pending = data.results.filter(r => r.status === "pending_review");
       if (pending && pending.length > 0) {
         timeouts.current.forEach(t => clearTimeout(t));
@@ -262,29 +262,26 @@ export default function UploadCircular({ onComplete, onCsvImportComplete }) {
                 <button
                   onClick={() => handleAction(item.threadId, "approve")}
                   disabled={!item.isValidId}
-                  className={`rounded-full px-6 py-2.5 text-xs font-semibold text-white transition-colors ${
-                    !item.isValidId ? "bg-neutral-300 cursor-not-allowed opacity-50" : "bg-emerald-500 hover:bg-emerald-600"
-                  }`}
+                  className={`rounded-full px-6 py-2.5 text-xs font-semibold text-white transition-colors ${!item.isValidId ? "bg-neutral-300 cursor-not-allowed opacity-50" : "bg-emerald-500 hover:bg-emerald-600"
+                    }`}
                 >
                   ✓ Approve Translation
                 </button>
                 <button
                   onClick={() => handleAction(item.threadId, "amend", item)}
                   disabled={!item.isValidId}
-                  className={`rounded-full px-6 py-2.5 text-xs font-semibold text-white transition-colors ${
-                    !item.isValidId ? "bg-neutral-300 cursor-not-allowed opacity-50" : "bg-violet-600 hover:bg-violet-700"
-                  }`}
+                  className={`rounded-full px-6 py-2.5 text-xs font-semibold text-white transition-colors ${!item.isValidId ? "bg-neutral-300 cursor-not-allowed opacity-50" : "bg-violet-600 hover:bg-violet-700"
+                    }`}
                 >
                   Save & Apply Amendments
                 </button>
                 <button
                   onClick={() => handleAction(item.threadId, "reject")}
                   disabled={!item.isValidId}
-                  className={`rounded-full border px-6 py-2.5 text-xs font-semibold transition-colors ${
-                    !item.isValidId
+                  className={`rounded-full border px-6 py-2.5 text-xs font-semibold transition-colors ${!item.isValidId
                       ? "border-neutral-200 bg-neutral-100 text-neutral-400 cursor-not-allowed opacity-50"
                       : "border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50"
-                  }`}
+                    }`}
                 >
                   ✗ Discard Requirement
                 </button>
@@ -332,9 +329,8 @@ export default function UploadCircular({ onComplete, onCsvImportComplete }) {
             }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
-            className={`mt-4 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
-              dragOver ? "border-violet-400 bg-violet-50/40" : "border-neutral-200"
-            }`}
+            className={`mt-4 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-10 text-center transition-colors ${dragOver ? "border-violet-400 bg-violet-50/40" : "border-neutral-200"
+              }`}
           >
             <p className="text-sm text-neutral-400">
               Or drag and drop your own circular PDF, or{" "}
@@ -382,14 +378,12 @@ export default function UploadCircular({ onComplete, onCsvImportComplete }) {
               return (
                 <div key={label} className="flex items-center gap-3">
                   <div
-                    className={`h-2 w-2 flex-shrink-0 rounded-full ${
-                      i <= stepIndex ? "bg-violet-600" : "bg-neutral-200"
-                    } ${active ? "animate-pulse" : ""}`}
+                    className={`h-2 w-2 flex-shrink-0 rounded-full ${i <= stepIndex ? "bg-violet-600" : "bg-neutral-200"
+                      } ${active ? "animate-pulse" : ""}`}
                   />
                   <p
-                    className={`font-mono text-sm ${
-                      i <= stepIndex ? "text-neutral-900" : "text-neutral-300"
-                    }`}
+                    className={`font-mono text-sm ${i <= stepIndex ? "text-neutral-900" : "text-neutral-300"
+                      }`}
                   >
                     {label}
                   </p>

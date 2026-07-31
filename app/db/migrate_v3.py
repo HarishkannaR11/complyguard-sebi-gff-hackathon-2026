@@ -85,4 +85,17 @@ def run_migrations():
         except Exception as e:
             print(f"[MIGRATION v3 WARNING] gap_results table: {e}")
 
+        # ── 4. Create workflow_state table ─────────────────────────────────
+        try:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS workflow_state (
+                    id VARCHAR PRIMARY KEY,
+                    state VARCHAR DEFAULT 'IDLE',
+                    updated_at DATETIME
+                )
+            """))
+            print("[MIGRATION v3] workflow_state table ready.")
+        except Exception as e:
+            print(f"[MIGRATION v3 WARNING] workflow_state table: {e}")
+
     print("[MIGRATION v3] Done.")

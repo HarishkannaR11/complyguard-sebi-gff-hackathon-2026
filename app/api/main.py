@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.routes_review import router as review_router
+from app.api.routes_workflow import router as workflow_router
 from app.db.database import Base, engine, get_db
 import app.db.models  # noqa: F401
 import time
@@ -35,6 +36,7 @@ from app.services.gap_engine import (
     has_company_obligations, run_gap_analysis,
 )
 from app.services.supersession import mark_superseded_obligations
+from app.services.workflow_state import WorkflowState, get_state, advance
 
 
 @asynccontextmanager
@@ -58,6 +60,7 @@ app.add_middleware(
 )
 
 app.include_router(review_router)
+app.include_router(workflow_router)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -114,11 +117,14 @@ def readiness(db: Session = Depends(get_db)):
     ).first() is not None
 
     has_company = has_company_obligations(db)
+    wf_state = get_state(db)
+    ORDER = list(WorkflowState)
 
     return {
         "has_regulatory_obligations": has_regulatory,
         "has_company_obligations": has_company,
         "gap_analysis_available": has_regulatory and has_company,
+        "workflow_state": wf_state.value,
     }
 
 
@@ -287,6 +293,15 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
     except Exception:
         db.rollback()
 
+    # Advance workflow state
+    has_pending = any(r["status"] == "pending_review" for r in results)
+    if has_pending:
+        advance(WorkflowState.REVIEW_PENDING, db)
+    elif not had_errors:
+        advance(WorkflowState.REVIEW_APPROVED, db)
+    else:
+        advance(WorkflowState.EXTRACTION_RUNNING, db)
+
     return {
         "status": "success",
         "filename": file.filename,
@@ -390,6 +405,9 @@ def import_obligations_csv(file: UploadFile = File(...), db: Session = Depends(g
 
         db.commit()
 
+        # Advance workflow state
+        advance(WorkflowState.COMPANY_DATA_IMPORTED, db)
+
         # Log audit entry
         try:
             audit = AuditTrail(
@@ -421,11 +439,12 @@ def list_gaps(db: Session = Depends(get_db)):
     """
     Returns gap analysis results (regulatory vs company obligations).
     Returns HTTP 400 if no company obligations have been uploaded.
-    Falls back to legacy Task-based gap list for backward compat when
-    called from old clients.
     """
     try:
-        return run_gap_analysis(db)
+        result = run_gap_analysis(db)
+        # Advance to DASHBOARD_READY on successful run
+        advance(WorkflowState.DASHBOARD_READY, db)
+        return result
     except HTTPException:
         raise
     except Exception as exc:

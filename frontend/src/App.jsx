@@ -1,14 +1,14 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
+import { addEvidence, getAuditLog, getEvidence, getGapAnalysis, getObligations, getReadiness } from "./api";
 import Nav from "./components/layout/Nav";
 import Sidebar from "./components/layout/Sidebar";
+import AuditTrail from "./components/views/AuditTrail";
+import GapDashboard from "./components/views/GapDashboard";
 import Hero from "./components/views/Hero";
 import Landing from "./components/views/Landing";
-import UploadCircular from "./components/views/UploadCircular";
-import ReviewWorkspace from "./components/views/ReviewWorkspace";
 import ObligationList from "./components/views/ObligationList";
-import GapDashboard from "./components/views/GapDashboard";
-import AuditTrail from "./components/views/AuditTrail";
-import { getObligations, getEvidence, getAuditLog, addEvidence, getReadiness, getGapAnalysis } from "./api";
+import ReviewWorkspace from "./components/views/ReviewWorkspace";
+import UploadCircular from "./components/views/UploadCircular";
 
 // Views that are always accessible regardless of data
 const BASE_VIEWS = ["landing", "upload", "review", "obligations", "audit"];

@@ -173,3 +173,11 @@ class GapResult(Base):
     gap_type = Column(String)
     detail = Column(Text, nullable=True)
     computed_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class WorkflowStateRecord(Base):
+    """Single-row table holding the current workflow state (id='current')."""
+    __tablename__ = "workflow_state"
+    id = Column(String, primary_key=True, default="current")
+    state = Column(String, default="IDLE")
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
