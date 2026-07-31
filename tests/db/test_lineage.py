@@ -40,7 +40,7 @@ def test_migration_and_lineage_relations():
     
     try:
         # 1. Create a Circular
-        circ_1 = Circular(id="SEBI-CIRC-1", title="Circular No 1", issue_date=datetime.datetime.utcnow())
+        circ_1 = Circular(id="SEBI-CIRC-1", title="Circular No 1", issue_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
         db.add(circ_1)
         db.commit()
         
@@ -71,7 +71,7 @@ def test_migration_and_lineage_relations():
         db.commit()
         
         # 5. Create Child (Amended) Obligation
-        circ_2 = Circular(id="SEBI-CIRC-2", title="Circular No 2", issue_date=datetime.datetime.utcnow())
+        circ_2 = Circular(id="SEBI-CIRC-2", title="Circular No 2", issue_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
         db.add(circ_2)
         sec_2 = Section(id="sec-2", title="Section 1: Updated Guidelines", circular_id=circ_2.id)
         db.add(sec_2)
@@ -96,7 +96,7 @@ def test_migration_and_lineage_relations():
         db.add(obl_amended)
         
         # 6. Add Deadline
-        dl_1 = Deadline(id="dl-1", due_date=datetime.datetime.utcnow(), status="open", obligation_id=obl_amended.id)
+        dl_1 = Deadline(id="dl-1", due_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), status="open", obligation_id=obl_amended.id)
         db.add(dl_1)
         
         # 7. Add Evidence

@@ -2,7 +2,7 @@
 import hashlib
 import json
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from datetime import datetime as dt_datetime
 
 import os
@@ -535,7 +535,7 @@ def _write_audit_entry(thread_id: str, node_name: str, action: dict, actor: str)
         try:
             last = db.query(AuditTrail).order_by(AuditTrail.timestamp.desc()).with_for_update().first()
             prev_hash = last.hash if last else ""
-            timestamp = dt_datetime.utcnow()
+            timestamp = dt_datetime.now(timezone.utc).replace(tzinfo=None)
             entry_hash = compute_audit_hash(prev_hash, action, timestamp)
             db.add(AuditTrail(
                 id=str(uuid.uuid4()),

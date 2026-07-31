@@ -126,7 +126,7 @@ def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db))
         import datetime
         circular = db.query(Circular).filter(Circular.id == circular_id).first()
         if not circular:
-            circular = Circular(id=circular_id, title=circular_id, issue_date=datetime.datetime.utcnow())
+            circular = Circular(id=circular_id, title=circular_id, issue_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
             db.add(circular)
             db.commit()
 

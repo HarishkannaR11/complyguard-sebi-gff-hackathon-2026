@@ -346,14 +346,24 @@ Mirrors the pipeline's own layering:
 
 Run everything: `python -m pytest`. Run one area: `python -m pytest tests/graph/`.
 
-## 11. Known incomplete pieces
+## 11. Observability, Telemetry & Health Checks
 
-- `app/db/seed_synthetic.py` and `scripts/generate_synthetic_data.py` are placeholder stubs
-  (`raise NotImplementedError`) — the intended output (6 obligations, 143 tasks, 129 evidence rows, 25
-  grievances, org roles) is documented in their docstrings but not yet implemented.
-- `evidence_status = "invalid"` is a reserved state in `ComplianceState` and routed in the graph, but
-  no node currently produces it — evidence validation logic doesn't exist yet.
-- OCR for scanned/image PDF pages is flagged (`[WARN]` in `pdf_cleaner.extract_pages`) but not
-  implemented; such pages silently contribute near-empty text to the pipeline.
-- The audit-hash-chain write path is not safe under concurrent writers (§6).
-- No authentication/authorization on any endpoint, including `POST /review/{thread_id}/decision`.
+The pipeline includes built-in telemetry counters and latency monitors exposed via REST:
+- **Metrics Aggregator** (`app/services/metrics.py`): Tracks process-wide latencies (LLM, embeddings, search, total processing time) and counters (retries, validation failures, score distribution).
+- **Prometheus Scraping**: Accessible via `GET /metrics` in standard prometheus exporter representation, or as structured JSON via `GET /metrics?format=json`.
+- **Deep Health Probes**: Accessible via `GET /health` to perform verification checks on PostgreSQL connectivity and Qdrant collections.
+
+## 12. Advanced Compliance Analytics Dashboard
+
+The web client dashboard (`frontend/src/components/views/GapDashboard.jsx`) consolidates extracted compliance rules and provides reports:
+- **Compliance Score**: Circular progress meters displaying the fraction of met vs active obligations.
+- **Lineage Impact Charts**: Aggregates and charts the distribution of obligations per circular.
+- **Department Breakdown**: Maps legislative actions to departments (*Finance*, *Corporate Compliance*, *System Audit*, *Portfolio Ops*, *Relations*).
+- **Report Exports**: Download spreadsheet archives (`XLS` format) and raw data files (`CSV`) for compliance audit logging.
+
+## 13. Known incomplete pieces
+
+- `scripts/generate_synthetic_data.py` is a placeholder stub (`raise NotImplementedError`).
+- `evidence_status = "invalid"` is a reserved state in `ComplianceState` and routed in the graph, but no node currently produces it — evidence validation logic doesn't exist yet.
+- OCR for scanned/image PDF pages is flagged (`[WARN]` in `pdf_cleaner.extract_pages`) but not implemented; such pages silently contribute near-empty text to the pipeline.
+- No authentication/authorization on any endpoint, including `POST /review/{thread_id}/submit` or dashboard downloads.
