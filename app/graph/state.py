@@ -21,3 +21,8 @@ class ComplianceState(TypedDict):
     clause_num: Optional[str]
     parent_clause: Optional[str]
     block_type: Optional[str]
+
+    # Comparison metadata fields (V2 Feature 2)
+    diff_changes: Optional[List[str]]
+    diff_reason: Optional[str]
+    diff_confidence: Optional[float]

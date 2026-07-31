@@ -163,14 +163,16 @@ backoff on `groq.APIConnectionError` only (other errors propagate immediately). 
 stripped of Markdown code fences and the first/last `{`/`}` are used to isolate the JSON object before
 `json.loads`, tolerating models that wrap JSON in prose despite the instruction not to.
 
-**`differ_node`** — read-only. Ensures the Qdrant collection exists at the right vector size, then
-searches it for the single nearest neighbor to this clause's embedding.
-- No hit, or top score `< SIMILARITY_THRESHOLD (0.85)` → `diff_status = "new"`.
-- Top hit ≥ threshold and its text is identical after whitespace/case normalization → `"unchanged"`.
-- Top hit ≥ threshold but text differs → `"amended"`, and `similarity_match` carries the full matched
-  Qdrant payload (including the prior `obligation_id`, once `mapper_node` has stored one).
-- This node never writes to Qdrant — only reads. `mapper_node` performs the write, once it has a
-  concrete `obligation_id` to attach.
+**`differ_node`** — read-only. Implements the two-stage semantic comparison pipeline:
+- **Stage 1 (Retrieval)**: Queries the Qdrant collection for the top-3 nearest candidate clauses based on the embedding of the current clause. If no candidates are found, it skips the LLM step and classifies it as `"new"`.
+- **Stage 2 (LLM Comparison)**: Formats candidates alongside the new clause text and sends a prompt (`COMPARISON_PROMPT`) to the Groq LLM (e.g. `llama-3.3-70b-versatile`). The LLM evaluates semantic matches, returning a structured JSON object containing:
+  - `status`: `"NEW"`, `"AMENDED"`, `"SUPERSEDED"`, or `"UNCHANGED"`.
+  - `confidence`: Confidence score (`0.0` - `1.0`).
+  - `matched_obligation_id`: The ID of the matching candidate from older circulars.
+  - `changes`: List of modified fields (e.g. `["deadline"]`).
+  - `reason`: Explanation of comparison details.
+- **Auditing**: Records comparison results (status, changes, reasons, confidence) in the `AuditTrail` table by calling `_write_audit_entry` with `node_name="differ"`.
+- **Normalization**: Maps uppercase LLM status back to lowercase `diff_status` (`"new"`, `"amended"`, `"superseded"`, `"unchanged"`) and resolves `similarity_match` to the corresponding candidate hit, ensuring full downstream compatibility.
 
 **`human_review_node`** — reached only on `"amended"`/`"superseded"` (from `differ`) or `"invalid"`
 (from `evidence_check`). Calls `langgraph.types.interrupt({...})` with the clause id, extracted

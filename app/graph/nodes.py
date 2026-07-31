@@ -129,7 +129,32 @@ def extractor_node(state: ComplianceState) -> dict:
     return {"extracted_obligation": obligation}
 
 
-SIMILARITY_THRESHOLD = 0.85
+COMPARISON_PROMPT = """
+You are a regulatory compliance AI. Your task is to compare a new regulatory clause against candidate clauses from older circulars to check for changes.
+
+For the new clause, identify if it matches any of the candidates, and classify the relationship as:
+- UNCHANGED: The new clause is identical or semantically identical to a candidate with no material changes to the requirement.
+- AMENDED: The new clause modifies a candidate (e.g. changes in deadlines, frequencies, wording, or scope, but refers to the same underlying obligation).
+- SUPERSEDED: The new clause explicitly replaces or overrides a candidate.
+- NEW: The new clause represents a completely new obligation not covered by any candidate.
+
+Candidates:
+{candidates_text}
+
+New Clause:
+{new_clause_text}
+
+Return your answer strictly as a JSON object with this schema:
+{{
+  "status": "UNCHANGED" | "AMENDED" | "SUPERSEDED" | "NEW",
+  "confidence": <float confidence score between 0.0 and 1.0>,
+  "matched_obligation_id": "<obligation_id of the matching candidate, or null if NEW>",
+  "changes": ["requirement" | "frequency" | "evidence_type" | "deadline_rule" | ...] or [] if UNCHANGED/NEW,
+  "reason": "<Detailed explanation comparing the two, explaining the changes or why it is new>"
+}}
+
+Do not include any conversational text or markdown formatting except the JSON object.
+"""
 
 
 def _normalize(text: str) -> str:
@@ -139,15 +164,107 @@ def _normalize(text: str) -> str:
 def differ_node(state: ComplianceState) -> dict:
     client = get_client()
     ensure_collection(client, vector_size=len(state["embedding"]))
-    hits = search(client, state["embedding"], limit=1)
+    
+    # Stage 1: Retrieve top-3 candidates (limit = 3)
+    hits = search(client, state["embedding"], limit=3)
+    
+    if not hits:
+        return {
+            "diff_status": "new",
+            "similarity_match": None,
+            "diff_changes": [],
+            "diff_reason": "No similar historical clauses found in vector database.",
+            "diff_confidence": 1.0
+        }
 
-    if not hits or hits[0]["score"] < SIMILARITY_THRESHOLD:
-        return {"diff_status": "new", "similarity_match": None}
+    # Build candidate descriptions for LLM comparison
+    candidates_text = ""
+    for idx, hit in enumerate(hits):
+        payload = hit.get("payload") or {}
+        obligation_id = payload.get("obligation_id", "N/A")
+        clause_id = payload.get("clause_id", "N/A")
+        text = hit.get("text", "N/A")
+        score = hit.get("score", 0.0)
+        candidates_text += f"\nCandidate {idx+1} [Score: {score:.3f}]:\n- Obligation ID: {obligation_id}\n- Clause ID: {clause_id}\n- Text: {text}\n"
 
-    top = hits[0]
-    if _normalize(top["text"]) == _normalize(state["raw_clause"]):
-        return {"diff_status": "unchanged", "similarity_match": top}
-    return {"diff_status": "amended", "similarity_match": top}
+    # Stage 2: Compare using LLM
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY environment variable is not set")
+
+    client_groq = Groq(api_key=api_key)
+    prompt = COMPARISON_PROMPT.format(
+        candidates_text=candidates_text,
+        new_clause_text=state["raw_clause"]
+    )
+    
+    response = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = client_groq.chat.completions.create(
+                model=GROQ_MODEL,
+                temperature=0,
+                max_tokens=800,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            break
+        except APIConnectionError:
+            if attempt == MAX_RETRIES - 1:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+            
+    content = response.choices[0].message.content
+    comparison = parse_json_robust(content)
+    
+    status_upper = comparison.get("status", "NEW").upper()
+    confidence = comparison.get("confidence", 1.0)
+    changes = comparison.get("changes", [])
+    reason = comparison.get("reason", "")
+    matched_id = comparison.get("matched_obligation_id")
+    
+    status_map = {
+        "NEW": "new",
+        "AMENDED": "amended",
+        "SUPERSEDED": "superseded",
+        "UNCHANGED": "unchanged"
+    }
+    diff_status = status_map.get(status_upper, "new")
+    
+    # Resolve the matching candidate hit
+    similarity_match = None
+    if diff_status != "new":
+        if matched_id:
+            for hit in hits:
+                payload = hit.get("payload") or {}
+                if payload.get("obligation_id") == matched_id:
+                    similarity_match = hit
+                    break
+        # Fallback to the top candidate hit if it's not new and no ID match was resolved
+        if not similarity_match and hits:
+            similarity_match = hits[0]
+
+    # Write audit trail entry
+    thread_id = f"{state['circular_id']}:{state['clause_id']}"
+    _write_audit_entry(
+        thread_id=thread_id,
+        node_name="differ",
+        action={
+            "status": status_upper,
+            "confidence": confidence,
+            "changes": changes,
+            "reason": reason,
+            "matched_obligation_id": matched_id
+        },
+        actor="system"
+    )
+
+    return {
+        "diff_status": diff_status,
+        "similarity_match": similarity_match,
+        "diff_changes": changes,
+        "diff_reason": reason,
+        "diff_confidence": confidence
+    }
 
 
 def mapper_node(state: ComplianceState) -> dict:
