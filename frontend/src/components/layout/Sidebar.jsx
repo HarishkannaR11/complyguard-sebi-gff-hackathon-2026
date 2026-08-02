@@ -1,4 +1,3 @@
-// Removed mockData import
 function daysUntil(dateStr) {
   const diff = Math.ceil(
     (new Date(dateStr) - new Date()) / (1000 * 60 * 60 * 24)
@@ -6,7 +5,7 @@ function daysUntil(dateStr) {
   return diff;
 }
 
-export default function Sidebar({ obligations, evidence, auditLog, onOpenDashboard }) {
+export default function Sidebar({ obligations, evidence, auditLog, readiness = {}, onOpenDashboard }) {
   const open = obligations.filter((o) => o.status !== "met" && o.deadline);
   const next = open
     .map((o) => ({ ...o, days: daysUntil(o.deadline) }))
@@ -21,6 +20,9 @@ export default function Sidebar({ obligations, evidence, auditLog, onOpenDashboa
     next && next.days < 0
       ? "bg-red-50 text-red-700"
       : "bg-emerald-50 text-emerald-700";
+
+  const gapAvailable = Boolean(readiness.gap_analysis_available);
+  const hasCompany = Boolean(readiness.has_company_obligations);
 
   return (
     <aside className="w-full flex-shrink-0 space-y-5 lg:w-[340px]">
@@ -42,9 +44,9 @@ export default function Sidebar({ obligations, evidence, auditLog, onOpenDashboa
             </dd>
           </div>
           <div className="flex items-center justify-between border-t border-neutral-100 pt-3">
-            <dt className="text-neutral-500">Total Obligations</dt>
+            <dt className="text-neutral-500">Regulatory Obligations</dt>
             <dd className="font-mono font-medium text-neutral-900">
-              {obligations.length}
+              {obligations.filter(o => o.sourceType !== "company").length || obligations.length}
             </dd>
           </div>
           <div className="flex items-center justify-between border-t border-neutral-100 pt-3">
@@ -59,13 +61,34 @@ export default function Sidebar({ obligations, evidence, auditLog, onOpenDashboa
           {auditLog.length} audit log entries
         </p>
 
-        <button
-          onClick={onOpenDashboard}
-          className="mt-5 flex w-full items-center justify-center gap-1.5 rounded-full bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-emerald-950 transition-colors hover:bg-emerald-400"
-        >
-          Open Gap Dashboard
-          <span>→</span>
-        </button>
+        {/* Gap Dashboard CTA — gated on company data */}
+        {gapAvailable ? (
+          <button
+            onClick={onOpenDashboard}
+            className="mt-5 flex w-full items-center justify-center gap-1.5 rounded-full bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-emerald-950 transition-colors hover:bg-emerald-400"
+          >
+            Open Gap Dashboard
+            <span>→</span>
+          </button>
+        ) : (
+          <div className="mt-5 rounded-xl border border-neutral-100 bg-neutral-50 p-4">
+            <p className="font-mono text-[10px] font-bold text-amber-600 uppercase tracking-wider mb-1.5">
+              Gap Analysis Locked
+            </p>
+            <p className="text-xs text-neutral-500 leading-relaxed">
+              {hasCompany
+                ? "Upload a SEBI circular to enable gap analysis."
+                : "Upload your company obligations CSV to compare against regulatory requirements and unlock the Gap Dashboard."}
+            </p>
+            <button
+              disabled
+              className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-full bg-neutral-200 px-4 py-2.5 text-sm font-semibold text-neutral-400 cursor-not-allowed"
+            >
+              Open Gap Dashboard
+              <span>→</span>
+            </button>
+          </div>
+        )}
       </div>
     </aside>
   );

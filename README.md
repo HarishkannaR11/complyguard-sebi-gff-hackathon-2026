@@ -34,14 +34,53 @@ Compliance teams at brokers, RTAs, and other SEBI intermediaries manually read h
 
 ## Features
 
+- **Intelligent Layout-Aware Parser (V2)** — coordinate-based layout extraction using PyMuPDF, preserving table structures (GFM Markdown grids) and mapping circular hierarchical structures.
+- **Two-Stage Hybrid Semantic Diff (V2)** — vector search retrieval (Stage 1) followed by LLM-based clause change classification (Stage 2) into NEW, AMENDED, SUPERSEDED, or UNCHANGED.
+- **Confidence-Aware Validation & Retries (V2)** — Pydantic validator models that check extraction fields, automatic approval thresholds (>=95%), warning indicators (80-95%), review escalation (<80%), and an automatic extraction retry loop.
+- **Regulatory Lineage Graph (V2)** — relational tracking of Circular -> Section -> Clause -> Obligation, including self-referential parent-child and versioning pointers.
+- **Human Review Workspace (V2)** — asynchronous review database queue with visual word-level colored diff highlighting, inline obligation editors, and non-blocking thread execution.
+- **Observability & Metrics (V2)** — comprehensive pipeline instrumentation recording latencies (LLM, embeddings, search, processing), error rates, retries, and confidence metrics. Exposes live system metrics in JSON and Prometheus formats.
 - **Circular ingestion** — PDF cleaning, clause splitting, embedding, and vector storage
-- **Obligation extraction & diffing** — structured obligations with deadline, required evidence type, and source clause, diffed across circular versions
-- **Human-in-the-loop review** — LangGraph interrupts route uncertain extractions to a reviewer before they're trusted
 - **Evidence tracking** — attach evidence to an obligation and watch its status flip to "met"
 - **Gap dashboard** — at-a-glance view of overdue and pending obligations
 - **Synthetic data** — a generator seeds realistic obligations, tasks, evidence, and grievance records for demoing without real customer data
 
-> **Note:** This is a hackathon prototype under active restructuring. The LangGraph pipeline, ORM models, review routes, and synthetic-data generator are being wired in — see `docs/superpowers/specs/2026-07-22-regops-ai-restructure-design.md` for the current build status.
+## Observability & Monitoring
+
+The compliance pipeline exposes live status updates, telemetry, and prometheus metrics:
+
+### 1. Health Checks
+Check system and database health by calling `/health`:
+```bash
+curl http://localhost:8000/health
+```
+**Response Format:**
+```json
+{
+  "status": "healthy",
+  "database": "reachable",
+  "qdrant": "reachable"
+}
+```
+
+### 2. Metrics scraping
+Fetch pipeline telemetry via `/metrics` (Prometheus-compatible format by default):
+```bash
+curl http://localhost:8000/metrics
+```
+To fetch metrics in a structured JSON layout, request the json format:
+```bash
+curl http://localhost:8000/metrics?format=json
+```
+
+**Metrics Tracked:**
+- `processing_time` — Total time to run a clause through the LangGraph pipeline
+- `llm_latency` — Request-response latency for Groq completions
+- `embedding_latency` — Latency to compute text embeddings
+- `vector_search_latency` — Qdrant query response times
+- `validation_failures` — Counter of Pydantic validation failures
+- `retry_count` — Counter of validation-driven LLM extraction retries
+- `confidence_distribution` — Count of obligation confidence scores across buckets (>=95%, 80-95%, <80%)
 
 ## Tech stack
 

@@ -1,6 +1,6 @@
-import { useState, useRef } from "react";
+import { useRef, useState } from "react";
+import { importObligationsCsv, submitReviewDecision, uploadCircular } from "../../api";
 import { CIRCULAR } from "../../data/mockData";
-import { uploadCircular, importObligationsCsv, submitReviewDecision } from "../../api";
 
 const PROCESSING_STEPS = [
   "Parsing PDF text...",
@@ -9,7 +9,7 @@ const PROCESSING_STEPS = [
   "Extracting structured obligations...",
 ];
 
-export default function UploadCircular({ onComplete }) {
+export default function UploadCircular({ onComplete, onCsvImportComplete }) {
   const [fileName, setFileName] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -26,7 +26,12 @@ export default function UploadCircular({ onComplete }) {
     try {
       const res = await importObligationsCsv(file);
       alert(`Successfully imported ${res.imported} obligations from CSV!`);
-      onComplete();
+      // Notify parent so it can refresh readiness/gap data
+      if (onCsvImportComplete) {
+        onCsvImportComplete();
+      } else {
+        onComplete();
+      }
     } catch (e) {
       console.error(e);
       alert("Failed to import CSV. Make sure it is a valid formatted CSV.");
@@ -44,6 +49,14 @@ export default function UploadCircular({ onComplete }) {
   };
 
   async function handleAction(threadId, actionType, itemData = null) {
+    const item = pendingReviews.find(p => p.threadId === threadId);
+    console.log("Selected review:", item || itemData || { threadId, actionType });
+
+    if (!threadId || threadId === "undefined" || (item && !item.isValidId)) {
+      alert("Cannot submit review decision: Missing or invalid review thread identifier.");
+      return;
+    }
+
     let decision = actionType;
     if (actionType === "amend" && itemData) {
       const payload = {
@@ -54,7 +67,7 @@ export default function UploadCircular({ onComplete }) {
       };
       decision = "amend:" + JSON.stringify(payload);
     }
-    
+
     try {
       await submitReviewDecision(threadId, decision);
       const remaining = pendingReviews.filter(p => p.threadId !== threadId);
@@ -64,7 +77,7 @@ export default function UploadCircular({ onComplete }) {
       }
     } catch (e) {
       console.error(e);
-      alert("Failed to submit review decision. Make sure the backend is running.");
+      alert("Failed to submit review decision: " + (e.message || "Make sure the backend is running."));
     }
   }
 
@@ -74,7 +87,7 @@ export default function UploadCircular({ onComplete }) {
     setProcessing(true);
     setStepIndex(0);
     setPendingReviews([]);
-    
+
     PROCESSING_STEPS.forEach((_, i) => {
       const t = setTimeout(() => setStepIndex(i), (i + 1) * 800);
       timeouts.current.push(t);
@@ -83,21 +96,26 @@ export default function UploadCircular({ onComplete }) {
     try {
       const fileToUpload = file || (await fetchSampleFile());
       const data = await uploadCircular(fileToUpload);
-      
+
       const pending = data.results.filter(r => r.status === "pending_review");
       if (pending && pending.length > 0) {
         timeouts.current.forEach(t => clearTimeout(t));
         setProcessing(false);
-        setPendingReviews(pending.map(p => ({
-          threadId: p.thread_id,
-          clauseId: p.clause_id,
-          clauseText: p.clause_text,
-          diffStatus: p.diff_status,
-          requirement: p.extracted_obligation?.requirement || "",
-          frequency: p.extracted_obligation?.frequency || "one-time",
-          evidenceType: p.extracted_obligation?.evidence_type || "",
-          deadlineRule: p.extracted_obligation?.deadline_rule || "",
-        })));
+        setPendingReviews(pending.map(p => {
+          const resolvedThreadId = p.thread_id || p.id || (data.circular_id && p.clause_id ? `${data.circular_id}:${p.clause_id}` : null);
+          const isValidId = Boolean(resolvedThreadId && typeof resolvedThreadId === "string" && resolvedThreadId.trim() !== "" && resolvedThreadId !== "undefined");
+          return {
+            threadId: resolvedThreadId,
+            isValidId,
+            clauseId: p.clause_id,
+            clauseText: p.clause_text,
+            diffStatus: p.diff_status,
+            requirement: p.extracted_obligation?.requirement || "",
+            frequency: p.extracted_obligation?.frequency || "one-time",
+            evidenceType: p.extracted_obligation?.evidence_type || "",
+            deadlineRule: p.extracted_obligation?.deadline_rule || "",
+          };
+        }));
       } else {
         onComplete();
       }
@@ -234,22 +252,36 @@ export default function UploadCircular({ onComplete }) {
                 </div>
               </div>
 
+              {!item.isValidId && (
+                <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">
+                  ⚠️ Invalid or missing review thread ID. Decision submission is disabled for this item.
+                </div>
+              )}
+
               <div className="mt-6 flex flex-wrap gap-3 border-t border-neutral-100 pt-4">
                 <button
                   onClick={() => handleAction(item.threadId, "approve")}
-                  className="rounded-full bg-emerald-500 px-6 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-600"
+                  disabled={!item.isValidId}
+                  className={`rounded-full px-6 py-2.5 text-xs font-semibold text-white transition-colors ${!item.isValidId ? "bg-neutral-300 cursor-not-allowed opacity-50" : "bg-emerald-500 hover:bg-emerald-600"
+                    }`}
                 >
                   ✓ Approve Translation
                 </button>
                 <button
                   onClick={() => handleAction(item.threadId, "amend", item)}
-                  className="rounded-full bg-violet-600 px-6 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-violet-700"
+                  disabled={!item.isValidId}
+                  className={`rounded-full px-6 py-2.5 text-xs font-semibold text-white transition-colors ${!item.isValidId ? "bg-neutral-300 cursor-not-allowed opacity-50" : "bg-violet-600 hover:bg-violet-700"
+                    }`}
                 >
                   Save & Apply Amendments
                 </button>
                 <button
                   onClick={() => handleAction(item.threadId, "reject")}
-                  className="rounded-full border border-neutral-200 bg-white px-6 py-2.5 text-xs font-semibold text-neutral-600 transition-colors hover:bg-neutral-50"
+                  disabled={!item.isValidId}
+                  className={`rounded-full border px-6 py-2.5 text-xs font-semibold transition-colors ${!item.isValidId
+                      ? "border-neutral-200 bg-neutral-100 text-neutral-400 cursor-not-allowed opacity-50"
+                      : "border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50"
+                    }`}
                 >
                   ✗ Discard Requirement
                 </button>
@@ -297,9 +329,8 @@ export default function UploadCircular({ onComplete }) {
             }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
-            className={`mt-4 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
-              dragOver ? "border-violet-400 bg-violet-50/40" : "border-neutral-200"
-            }`}
+            className={`mt-4 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-10 text-center transition-colors ${dragOver ? "border-violet-400 bg-violet-50/40" : "border-neutral-200"
+              }`}
           >
             <p className="text-sm text-neutral-400">
               Or drag and drop your own circular PDF, or{" "}
@@ -347,14 +378,12 @@ export default function UploadCircular({ onComplete }) {
               return (
                 <div key={label} className="flex items-center gap-3">
                   <div
-                    className={`h-2 w-2 flex-shrink-0 rounded-full ${
-                      i <= stepIndex ? "bg-violet-600" : "bg-neutral-200"
-                    } ${active ? "animate-pulse" : ""}`}
+                    className={`h-2 w-2 flex-shrink-0 rounded-full ${i <= stepIndex ? "bg-violet-600" : "bg-neutral-200"
+                      } ${active ? "animate-pulse" : ""}`}
                   />
                   <p
-                    className={`font-mono text-sm ${
-                      i <= stepIndex ? "text-neutral-900" : "text-neutral-300"
-                    }`}
+                    className={`font-mono text-sm ${i <= stepIndex ? "text-neutral-900" : "text-neutral-300"
+                      }`}
                   >
                     {label}
                   </p>

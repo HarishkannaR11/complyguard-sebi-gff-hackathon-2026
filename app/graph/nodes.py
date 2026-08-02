@@ -2,7 +2,7 @@
 import hashlib
 import json
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from datetime import datetime as dt_datetime
 
 import os
@@ -35,9 +35,10 @@ def parse_json_robust(content: str) -> dict:
             raise ValueError(f"Failed to decode LLM JSON: {raw_json}. Error: {str(e)}")
 
 from app.db.database import SessionLocal
-from app.db.models import AuditTrail, EvidenceLog, Obligation, Task
+from app.db.models import AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause, Evidence, Deadline, ApplicableEntity, ReviewQueue
 from app.embeddings.embedder import embed_texts
 from app.embeddings.qdrant_client import ensure_collection, get_client, search, upsert_chunks
+from app.services.metrics import metrics_collector
 
 from .state import ComplianceState
 
@@ -49,13 +50,17 @@ FREQUENCY_DAYS = {
 
 
 def chunker_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering chunker stage for clause {state.get('clause_id')}...")
     raw_clause = state["raw_clause"].strip()
     heading = state.get("heading") or raw_clause.splitlines()[0][:80].strip()
     return {"raw_clause": raw_clause, "heading": heading}
 
 
 def embedder_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering embedder stage for clause {state.get('clause_id')}...")
+    start = time.time()
     embedding = embed_texts([state["raw_clause"]])[0]
+    metrics_collector.record_embedding_latency(time.time() - start)
     return {"embedding": embedding}
 
 
@@ -89,9 +94,12 @@ Return the result strictly as a JSON object matching this schema:
     "requirement": "Clear description of what must be done",
     "frequency": "How often this recurs (e.g. one-time, monthly, quarterly, annual)",
     "evidence_type": "What proof is needed to show compliance",
-    "deadline_rule": "An ISO date YYYY-MM-DD if the clause gives a specific calendar
-        date, a recognized frequency keyword (monthly/quarterly/annual) if it recurs
-        on a schedule with no fixed date, or null if open-ended with no deadline"
+    "deadline_rule": "An ISO date YYYY-MM-DD if the clause gives a specific calendar date, a recognized frequency keyword (monthly/quarterly/annual) if it recurs on a schedule with no fixed date, or null if open-ended with no deadline",
+    
+    "deadline_confidence": <float confidence score for deadline extraction between 0.0 and 1.0>,
+    "entity_confidence": <float confidence score for target entity identification between 0.0 and 1.0>,
+    "evidence_confidence": <float confidence score for evidence type extraction between 0.0 and 1.0>,
+    "overall_confidence": <float overall extraction confidence score between 0.0 and 1.0>
 }}
 
 Do not include any other text in your response, only the JSON object.
@@ -102,6 +110,7 @@ Clause to analyze:
 
 
 def extractor_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering extractor stage for clause {state.get('clause_id')}...")
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY environment variable is not set")
@@ -110,6 +119,7 @@ def extractor_node(state: ComplianceState) -> dict:
     prompt = EXTRACTION_PROMPT.format(clause_text=state["raw_clause"])
 
     response = None
+    start = time.time()
     for attempt in range(MAX_RETRIES):
         try:
             response = client.chat.completions.create(
@@ -123,13 +133,141 @@ def extractor_node(state: ComplianceState) -> dict:
             if attempt == MAX_RETRIES - 1:
                 raise
             time.sleep(1.5 * (attempt + 1))
+    metrics_collector.record_llm_latency(time.time() - start)
 
     content = response.choices[0].message.content
     obligation = parse_json_robust(content)
     return {"extracted_obligation": obligation}
 
 
-SIMILARITY_THRESHOLD = 0.85
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, List
+
+
+class ExtractedObligation(BaseModel):
+    requirement: str
+    frequency: str
+    evidence_type: str
+    deadline_rule: Optional[str] = None
+    
+    deadline_confidence: float
+    entity_confidence: float
+    evidence_confidence: float
+    overall_confidence: float
+    
+    @field_validator("requirement", "frequency", "evidence_type")
+    @classmethod
+    def check_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty or whitespace only")
+        return v.strip()
+        
+    @field_validator("frequency")
+    @classmethod
+    def validate_frequency(cls, v: str) -> str:
+        freqs = {"one-time", "monthly", "quarterly", "annual"}
+        if v.lower().strip() not in freqs:
+            raise ValueError(f"Invalid frequency: {v}. Must be one of {freqs}")
+        return v.lower().strip()
+        
+    @field_validator("deadline_rule")
+    @classmethod
+    def validate_deadline_rule(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        v_clean = v.lower().strip()
+        if v_clean in {"one-time", "monthly", "quarterly", "annual"}:
+            return v_clean
+        try:
+            date.fromisoformat(v_clean)
+            return v_clean
+        except ValueError:
+            raise ValueError(f"Invalid deadline rule: {v}. Must be an ISO date or frequency keyword")
+
+    @field_validator("deadline_confidence", "entity_confidence", "evidence_confidence", "overall_confidence", mode="before")
+    @classmethod
+    def normalize_confidence(cls, v):
+        if v is None:
+            return 0.0
+        try:
+            val = float(v)
+            if val > 1.0:
+                val = val / 100.0
+            return max(0.0, min(1.0, val))
+        except (ValueError, TypeError):
+            raise ValueError(f"Confidence score must be a number: {v}")
+
+
+def validation_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering validation stage for clause {state.get('clause_id')}...")
+    extracted = state.get("extracted_obligation")
+    errors = []
+    warnings = []
+    overall_conf = 0.0
+    
+    if not extracted:
+        errors.append("No obligation extracted by LLM.")
+    else:
+        try:
+            validated = ExtractedObligation(**extracted)
+            overall_conf = validated.overall_confidence
+            
+            if overall_conf < 0.80:
+                errors.append(f"Overall confidence {overall_conf:.2f} is below 80% threshold.")
+            elif overall_conf < 0.95:
+                warnings.append(f"Warning: Overall confidence {overall_conf:.2f} is between 80% and 95%.")
+        except Exception as e:
+            if hasattr(e, "errors"):
+                for err in e.errors():
+                    errors.append(f"Field '{err['loc'][0]}': {err['msg']}")
+            else:
+                errors.append(str(e))
+                
+    validation_status = "passed" if not errors else "failed"
+    retries = state.get("extraction_retries") or 0
+    next_retries = retries + 1 if validation_status == "failed" else retries
+    
+    # Track metrics
+    if validation_status == "failed":
+        metrics_collector.increment_validation_failures()
+        metrics_collector.increment_retry_count()
+    metrics_collector.record_confidence(overall_conf)
+    
+    return {
+        "validation_status": validation_status,
+        "validation_errors": errors,
+        "validation_warnings": warnings,
+        "overall_confidence": overall_conf,
+        "extraction_retries": next_retries
+    }
+
+
+COMPARISON_PROMPT = """
+You are a regulatory compliance AI. Your task is to compare a new regulatory clause against candidate clauses from older circulars to check for changes.
+
+For the new clause, identify if it matches any of the candidates, and classify the relationship as:
+- UNCHANGED: The new clause is identical or semantically identical to a candidate with no material changes to the requirement.
+- AMENDED: The new clause modifies a candidate (e.g. changes in deadlines, frequencies, wording, or scope, but refers to the same underlying obligation).
+- SUPERSEDED: The new clause explicitly replaces or overrides a candidate.
+- NEW: The new clause represents a completely new obligation not covered by any candidate.
+
+Candidates:
+{candidates_text}
+
+New Clause:
+{new_clause_text}
+
+Return your answer strictly as a JSON object with this schema:
+{{
+  "status": "UNCHANGED" | "AMENDED" | "SUPERSEDED" | "NEW",
+  "confidence": <float confidence score between 0.0 and 1.0>,
+  "matched_obligation_id": "<obligation_id of the matching candidate, or null if NEW>",
+  "changes": ["requirement" | "frequency" | "evidence_type" | "deadline_rule" | ...] or [] if UNCHANGED/NEW,
+  "reason": "<Detailed explanation comparing the two, explaining the changes or why it is new>"
+}}
+
+Do not include any conversational text or markdown formatting except the JSON object.
+"""
 
 
 def _normalize(text: str) -> str:
@@ -137,20 +275,118 @@ def _normalize(text: str) -> str:
 
 
 def differ_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering differ stage for clause {state.get('clause_id')}...")
     client = get_client()
     ensure_collection(client, vector_size=len(state["embedding"]))
-    hits = search(client, state["embedding"], limit=1)
+    
+    # Stage 1: Retrieve top-3 candidates (limit = 3)
+    start_search = time.time()
+    hits = search(client, state["embedding"], limit=3)
+    metrics_collector.record_vector_search_latency(time.time() - start_search)
+    
+    if not hits:
+        return {
+            "diff_status": "new",
+            "similarity_match": None,
+            "diff_changes": [],
+            "diff_reason": "No similar historical clauses found in vector database.",
+            "diff_confidence": 1.0
+        }
 
-    if not hits or hits[0]["score"] < SIMILARITY_THRESHOLD:
-        return {"diff_status": "new", "similarity_match": None}
+    # Build candidate descriptions for LLM comparison
+    candidates_text = ""
+    for idx, hit in enumerate(hits):
+        payload = hit.get("payload") or {}
+        obligation_id = payload.get("obligation_id", "N/A")
+        clause_id = payload.get("clause_id", "N/A")
+        text = hit.get("text", "N/A")
+        score = hit.get("score", 0.0)
+        candidates_text += f"\nCandidate {idx+1} [Score: {score:.3f}]:\n- Obligation ID: {obligation_id}\n- Clause ID: {clause_id}\n- Text: {text}\n"
 
-    top = hits[0]
-    if _normalize(top["text"]) == _normalize(state["raw_clause"]):
-        return {"diff_status": "unchanged", "similarity_match": top}
-    return {"diff_status": "amended", "similarity_match": top}
+    # Stage 2: Compare using LLM
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY environment variable is not set")
+
+    client_groq = Groq(api_key=api_key)
+    prompt = COMPARISON_PROMPT.format(
+        candidates_text=candidates_text,
+        new_clause_text=state["raw_clause"]
+    )
+    
+    response = None
+    start_llm = time.time()
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = client_groq.chat.completions.create(
+                model=GROQ_MODEL,
+                temperature=0,
+                max_tokens=800,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            break
+        except APIConnectionError:
+            if attempt == MAX_RETRIES - 1:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    metrics_collector.record_llm_latency(time.time() - start_llm)
+            
+    content = response.choices[0].message.content
+    comparison = parse_json_robust(content)
+    
+    status_upper = comparison.get("status", "NEW").upper()
+    confidence = comparison.get("confidence", 1.0)
+    changes = comparison.get("changes", [])
+    reason = comparison.get("reason", "")
+    matched_id = comparison.get("matched_obligation_id")
+    
+    status_map = {
+        "NEW": "new",
+        "AMENDED": "amended",
+        "SUPERSEDED": "superseded",
+        "UNCHANGED": "unchanged"
+    }
+    diff_status = status_map.get(status_upper, "new")
+    
+    # Resolve the matching candidate hit
+    similarity_match = None
+    if diff_status != "new":
+        if matched_id:
+            for hit in hits:
+                payload = hit.get("payload") or {}
+                if payload.get("obligation_id") == matched_id:
+                    similarity_match = hit
+                    break
+        # Fallback to the top candidate hit if it's not new and no ID match was resolved
+        if not similarity_match and hits:
+            similarity_match = hits[0]
+
+    # Write audit trail entry
+    thread_id = f"{state['circular_id']}:{state['clause_id']}"
+    _write_audit_entry(
+        thread_id=thread_id,
+        node_name="differ",
+        action={
+            "status": status_upper,
+            "confidence": confidence,
+            "changes": changes,
+            "reason": reason,
+            "matched_obligation_id": matched_id
+        },
+        actor="system"
+    )
+
+    return {
+        "diff_status": diff_status,
+        "similarity_match": similarity_match,
+        "diff_changes": changes,
+        "diff_reason": reason,
+        "diff_confidence": confidence
+    }
 
 
 def mapper_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering mapper stage for clause {state.get('clause_id')}...")
     if state.get("human_decision") == "reject" or state.get("diff_status") == "unchanged":
         return {}
 
@@ -173,6 +409,23 @@ def mapper_node(state: ComplianceState) -> dict:
         obligation.frequency = obligation_data["frequency"]
         obligation.evidence_type = obligation_data["evidence_type"]
         obligation.deadline_rule = obligation_data["deadline_rule"]
+        
+        # Lineage attributes
+        obligation.origin_circular_id = state["circular_id"]
+        obligation.clause_uuid = state.get("clause_uuid")
+        
+        diff_status = state.get("diff_status")
+        matched_id = None
+        if state.get("similarity_match"):
+            matched_id = state["similarity_match"]["payload"].get("obligation_id")
+            
+        if diff_status == "amended" and matched_id:
+            obligation.previous_obligation_id = matched_id
+            obligation.amended_obligation_id = matched_id
+        elif diff_status == "superseded" and matched_id:
+            obligation.previous_obligation_id = matched_id
+            obligation.superseded_obligation_id = matched_id
+
         db.flush()
 
         due_date_value = resolve_due_date(obligation_data.get("deadline_rule"), date.today())
@@ -180,6 +433,8 @@ def mapper_node(state: ComplianceState) -> dict:
             dt_datetime.combine(due_date_value, dt_datetime.min.time())
             if due_date_value else None
         )
+        
+        # Backwards compatible Task
         task = Task(
             id=str(uuid.uuid4()),
             obligation_id=obligation.id,
@@ -187,6 +442,24 @@ def mapper_node(state: ComplianceState) -> dict:
             due_date=task_due_date,
         )
         db.add(task)
+        
+        # Parallel V2 Deadline
+        deadline = Deadline(
+            id=str(uuid.uuid4()),
+            due_date=task_due_date,
+            status="open",
+            obligation_id=obligation.id
+        )
+        db.add(deadline)
+
+        # Parallel V2 ApplicableEntity
+        entity = ApplicableEntity(
+            id=str(uuid.uuid4()),
+            entity_name=obligation.intermediary or "stockbroker",
+            obligation_id=obligation.id
+        )
+        db.add(entity)
+
         db.commit()
 
         obligation_id, task_id = obligation.id, task.id
@@ -215,6 +488,7 @@ def mapper_node(state: ComplianceState) -> dict:
 
 
 def evidence_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering evidence check stage for clause {state.get('clause_id')}...")
     task_info = state.get("task")
     if not task_info:
         return {"evidence_status": "missing"}
@@ -232,6 +506,7 @@ def evidence_node(state: ComplianceState) -> dict:
 
 
 def gap_engine_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering gap engine stage for clause {state.get('clause_id')}...")
     task_info = state.get("task")
     if not task_info:
         return {}
@@ -260,7 +535,7 @@ def _write_audit_entry(thread_id: str, node_name: str, action: dict, actor: str)
         try:
             last = db.query(AuditTrail).order_by(AuditTrail.timestamp.desc()).with_for_update().first()
             prev_hash = last.hash if last else ""
-            timestamp = dt_datetime.utcnow()
+            timestamp = dt_datetime.now(timezone.utc).replace(tzinfo=None)
             entry_hash = compute_audit_hash(prev_hash, action, timestamp)
             db.add(AuditTrail(
                 id=str(uuid.uuid4()),
@@ -277,12 +552,84 @@ def _write_audit_entry(thread_id: str, node_name: str, action: dict, actor: str)
             db.close()
 
 
+import difflib
+
+
+def generate_text_diff(old_text: str, new_text: str) -> str:
+    if not old_text:
+        return new_text
+    
+    old_words = old_text.split()
+    new_words = new_text.split()
+    
+    matcher = difflib.SequenceMatcher(None, old_words, new_words)
+    diff_html = []
+    
+    for opcode, a_start, a_end, b_start, b_end in matcher.get_opcodes():
+        if opcode == 'equal':
+            diff_html.append(" ".join(old_words[a_start:a_end]))
+        elif opcode == 'replace':
+            diff_html.append(f"<del class='bg-red-100 text-red-700 line-through px-1 rounded'>{' '.join(old_words[a_start:a_end])}</del>")
+            diff_html.append(f"<ins class='bg-green-100 text-green-700 font-semibold px-1 rounded'>{' '.join(new_words[b_start:b_end])}</ins>")
+        elif opcode == 'delete':
+            diff_html.append(f"<del class='bg-red-100 text-red-700 line-through px-1 rounded'>{' '.join(old_words[a_start:a_end])}</del>")
+        elif opcode == 'insert':
+            diff_html.append(f"<ins class='bg-green-100 text-green-700 font-semibold px-1 rounded'>{' '.join(new_words[b_start:b_end])}</ins>")
+            
+    return " ".join(diff_html)
+
+
 def human_review_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Entering human review stage for clause {state.get('clause_id')}...")
+    prev_text = None
+    similarity_match = state.get("similarity_match")
+    if similarity_match:
+        prev_text = similarity_match.get("text")
+        
+    new_text = state.get("raw_clause") or ""
+    diff = generate_text_diff(prev_text or "", new_text)
+    
+    # Save to ReviewQueue database table
+    db = SessionLocal()
+    try:
+        thread_id = f"{state['circular_id']}:{state['clause_id']}"
+        review_item = db.query(ReviewQueue).filter(ReviewQueue.id == thread_id).first()
+        if not review_item:
+            explanation = state.get("diff_reason")
+            if not explanation and state.get("validation_errors"):
+                explanation = ", ".join(state["validation_errors"])
+                
+            confidence = state.get("overall_confidence")
+            if confidence is None and similarity_match:
+                confidence = similarity_match.get("score")
+                
+            review_item = ReviewQueue(
+                id=thread_id,
+                circular_id=state["circular_id"],
+                clause_id=state["clause_id"],
+                previous_clause=prev_text,
+                new_clause=new_text,
+                highlighted_diff=diff,
+                llm_explanation=explanation,
+                confidence=confidence,
+                extracted_obligation=state.get("extracted_obligation"),
+                status="pending"
+            )
+            db.add(review_item)
+            db.commit()
+    finally:
+        db.close()
+
     resume = interrupt({
         "clause_id": state["clause_id"],
         "extracted_obligation": state.get("extracted_obligation"),
         "diff_status": state.get("diff_status"),
         "similarity_match": state.get("similarity_match"),
+        "previous_clause": prev_text,
+        "new_clause": new_text,
+        "highlighted_diff": diff,
+        "llm_explanation": state.get("diff_reason") or (state.get("validation_errors") and ", ".join(state["validation_errors"])),
+        "confidence": state.get("overall_confidence") or (similarity_match and similarity_match.get("score")),
     })
     decision = resume["decision"]
     actor = resume.get("actor", "unknown")
@@ -293,6 +640,20 @@ def human_review_node(state: ComplianceState) -> dict:
         amendment = json.loads(decision[len("amend:"):])
         extracted_obligation = {**(extracted_obligation or {}), **amendment}
         human_decision = "amend"
+
+    # Update status in ReviewQueue table
+    db = SessionLocal()
+    try:
+        thread_id = f"{state['circular_id']}:{state['clause_id']}"
+        review_item = db.query(ReviewQueue).filter(ReviewQueue.id == thread_id).first()
+        if review_item:
+            review_item.status = "approved" if human_decision == "approve" else ("rejected" if human_decision == "reject" else "edited")
+            review_item.extracted_obligation = extracted_obligation
+            db.commit()
+    except Exception as e:
+        print(f"[WARNING] Failed to update ReviewQueue status: {e}")
+    finally:
+        db.close()
 
     _write_audit_entry(
         thread_id=f"{state['circular_id']}:{state['clause_id']}",
@@ -308,6 +669,7 @@ def human_review_node(state: ComplianceState) -> dict:
 
 
 def finalize_node(state: ComplianceState) -> dict:
+    print(f"[PIPELINE] Finalizing pipeline for clause {state.get('clause_id')}...")
     _write_audit_entry(
         thread_id=f"{state['circular_id']}:{state['clause_id']}",
         node_name="finalize",

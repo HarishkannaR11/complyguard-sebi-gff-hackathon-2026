@@ -1,6 +1,7 @@
 const STEPS = [
   { id: "landing", label: "Overview" },
   { id: "upload", label: "Upload" },
+  { id: "review", label: "Review Workspace" },
   { id: "obligations", label: "Obligations" },
   { id: "dashboard", label: "Gap Dashboard" },
   { id: "audit", label: "Audit Trail" },
@@ -40,13 +41,12 @@ export default function Nav({ view, setView, unlocked }) {
                 key={step.id}
                 disabled={!isUnlocked}
                 onClick={() => setView(step.id)}
-                className={`whitespace-nowrap border-b-2 py-3 text-sm font-medium transition-colors ${
-                  isActive
+                className={`whitespace-nowrap border-b-2 py-3 text-sm font-medium transition-colors ${isActive
                     ? "border-violet-700 text-violet-700"
                     : isUnlocked
-                    ? "border-transparent text-neutral-500 hover:text-neutral-900"
-                    : "cursor-not-allowed border-transparent text-neutral-300"
-                }`}
+                      ? "border-transparent text-neutral-500 hover:text-neutral-900"
+                      : "cursor-not-allowed border-transparent text-neutral-300"
+                  }`}
               >
                 {step.label}
               </button>

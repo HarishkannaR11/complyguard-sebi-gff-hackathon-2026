@@ -90,42 +90,42 @@ def seed() -> None:
             id="task-networth",
             obligation_id="ob-networth",
             owner="finance",
-            due_date=datetime.datetime.utcnow() + datetime.timedelta(days=30),
+            due_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=30),
             status="open"
         )
         task2 = Task(
             id="task-audit",
             obligation_id="ob-audit",
             owner="compliance",
-            due_date=datetime.datetime.utcnow() - datetime.timedelta(days=15),
+            due_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=15),
             status="open"
         )
         task3 = Task(
             id="task-collateral",
             obligation_id="ob-collateral",
             owner="risk_team",
-            due_date=datetime.datetime.utcnow() - datetime.timedelta(days=1),
+            due_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=1),
             status="met"
         )
         task4 = Task(
             id="task-portfolio",
             obligation_id="ob-portfolio",
             owner="portfolio_ops",
-            due_date=datetime.datetime.utcnow() + datetime.timedelta(days=5),
+            due_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=5),
             status="open"
         )
         task5 = Task(
             id="task-rta-grievance",
             obligation_id="ob-rta-grievance",
             owner="rta_compliance",
-            due_date=datetime.datetime.utcnow() + datetime.timedelta(days=20),
+            due_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=20),
             status="open"
         )
         task6 = Task(
             id="task-mii-bcp",
             obligation_id="ob-mii-bcp",
             owner="dr_ops",
-            due_date=datetime.datetime.utcnow() + datetime.timedelta(days=45),
+            due_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=45),
             status="open"
         )
         db.add_all([task1, task2, task3, task4, task5, task6])
@@ -136,14 +136,14 @@ def seed() -> None:
             id="evidence-collateral-1",
             task_id="task-collateral",
             file_ref="daily_collateral_system_log_2026-07-23.csv",
-            submitted_at=datetime.datetime.utcnow() - datetime.timedelta(days=1, hours=2)
+            submitted_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=1, hours=2)
         )
         db.add(ev)
 
         # 4. Audit Trail Hash Chain
         # Entry 1: Seeding Obligations
         action1 = {"action": "seed_obligations", "count": 6}
-        ts1 = datetime.datetime.utcnow() - datetime.timedelta(days=2)
+        ts1 = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=2)
         hash1 = compute_audit_hash("", action1, ts1)
         
         audit1 = AuditTrail(
@@ -159,7 +159,7 @@ def seed() -> None:
         
         # Entry 2: Seeding Tasks & Evidence
         action2 = {"action": "seed_evidence", "task_id": "task-collateral"}
-        ts2 = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        ts2 = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=1)
         hash2 = compute_audit_hash(hash1, action2, ts2)
         
         audit2 = AuditTrail(

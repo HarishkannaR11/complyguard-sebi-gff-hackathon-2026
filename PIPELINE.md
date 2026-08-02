@@ -16,25 +16,26 @@ system as it exists now, not the history of how it got there.
   PDF file
      │
      ▼
-┌─────────────┐    ┌──────────────────┐    ┌───────────────────────────────────────────────┐
-│ pdf_cleaner │───▶│ clause_splitter  │───▶│  for each clause: run the LangGraph state       │
-│  (PyMuPDF)  │    │ (regex chunker)  │    │  machine (app/graph/build_graph.py)              │
-└─────────────┘    └──────────────────┘    └───────────────────────────────────────────────┘
-                                                              │
-                                              ┌───────────────┴────────────────┐
-                                              │  per-clause result:            │
-                                              │  processed / pending_review /  │
-                                              │  error                         │
-                                              └───────────────┬────────────────┘
-                                                              ▼
-                                        ┌──────────────────────────────────────────┐
-                                        │ mark_superseded_obligations()             │
-                                        │ (app/services/supersession.py, batch-level,│
-                                        │  only if zero clauses errored)            │
-                                        └──────────────────────────────────────────┘
-                                                              │
-                                                              ▼
-                                        response: {results[], superseded_obligation_ids[]}
+┌──────────────────┐
+│  hybrid_parser   │───▶  for each structured chunk: run the LangGraph state
+│  (PyMuPDF / block │      machine (app/graph/build_graph.py)
+│  & table extraction)
+└──────────────────┘
+                                             │
+                             ┌───────────────┴────────────────┐
+                             │  per-chunk result:             │
+                             │  processed / pending_review /  │
+                             │  error                         │
+                             └───────────────┬────────────────┘
+                                             ▼
+                                       ┌──────────────────────────────────────────┐
+                                       │ mark_superseded_obligations()             │
+                                       │ (app/services/supersession.py, batch-level,│
+                                       │  only if zero clauses errored)            │
+                                       └──────────────────────────────────────────┘
+                                             │
+                                             ▼
+                                       response: {results[], superseded_obligation_ids[]}
 ```
 
 Everything downstream of upload (`GET /obligations`, `GET /gaps`, `POST /evidence`,
@@ -42,47 +43,37 @@ Everything downstream of upload (`GET /obligations`, `GET /gaps`, `POST /evidenc
 populated and the Qdrant collection it upserted into. There is no background worker — `POST /upload`
 runs the whole per-clause pipeline synchronously inside the request.
 
-## 2. Stage 1 — PDF ingestion (`app/ingestion/pdf_cleaner.py`)
+## 2. Hybrid Document Parsing (`app/ingestion/hybrid_parser.py`)
 
-Entry point: `extract_and_clean(pdf_path) -> str`.
+Entry point: `parse_pdf_structured(pdf_path) -> list[dict]`.
 
-1. `extract_pages()` — opens the PDF with PyMuPDF (`fitz`) and pulls raw text per page. A page whose
-   extracted text is under 20 characters is flagged with a `[WARN]` print as likely scanned/image
-   content needing OCR (OCR itself is not implemented — this is a diagnostic signal only).
-2. Per page, in order:
-   - `strip_headers_footers()` — regex-strips repeating "Page X of Y" footers, SEBI circular reference
-     codes (`SEBI/HO/...`), and trailing "Circular No.:" / "Ref. No.:" labels that appear on every
-     page and are not clause content.
-   - `dehyphenate()` — rejoins words split across a line-wrap (`segrega-\ntion` → `segregation`).
-   - `normalize_whitespace()` — collapses non-breaking spaces, repeated spaces/tabs, and 3+ blank
-     lines down to at most one blank line.
-3. Pages are joined with a blank line, then `remove_boilerplate()` strips standard legal preamble
-   patterns (e.g. "In exercise of the powers conferred...") that are never obligations and would
-   otherwise get chunked and sent to the LLM as if they were a clause.
+This module acts as the primary layout-aware structure layer, extracting sections, subsections, clause numbering, parent-child relationships, page numbers, and tabular grids.
 
-`qa_spot_check()` is a manual debugging helper (prints the first N cleaned paragraphs over 40 chars) —
-not called by the pipeline, only useful when running `pdf_cleaner.py` directly as a script to eyeball
-cleaning quality before ingesting.
-
-**Why this matters:** skipping this stage corrupts clause boundaries (the splitter in stage 2 depends
-on clean line starts) and pollutes embeddings with repeated header noise, which would degrade the
-similarity search in stage 4.
-
-## 3. Stage 2 — Clause splitting (`app/ingestion/clause_splitter.py`)
-
-Entry point: `split_into_clauses(text) -> list[str]`.
-
-Primary strategy: a regex, `^(?=\d+(?:\.\d+)*\.?\s+\S)` (multiline), matches the start of any line
-that begins with a numbered clause label (`1.`, `2.3`, `4.1.2` …) followed by content, and splits the
-text at those boundaries. This is what SEBI circulars' numbered-clause structure is built around.
-
-Fallback: if that regex produces one piece or fewer (i.e. the document has no numbered-clause
-structure the regex recognizes), split on blank-line-separated paragraphs instead, so the pipeline
-degrades gracefully rather than treating an entire circular as one giant "clause."
-
-Each returned clause is later assigned an index-based id (`clause-0`, `clause-1`, …) by the caller
-(`app/api/main.py`'s `/upload` handler, or `scripts/run_ingest.py`) — the splitter itself is unaware
-of ids.
+1. **Table Extraction**:
+   - Opens the PDF with PyMuPDF and finds tables using `page.find_tables()`.
+   - Table grids are extracted using `tab.extract()` and formatted into GFM (GitHub Flavored Markdown) representation to preserve grid structures.
+   - The bounding box (`bbox`) of each table is kept to ensure their content is skipped in subsequent text block extraction, preventing duplicate reads.
+2. **Text Block Layout Extraction**:
+   - Uses PyMuPDF's block parser `page.get_text("blocks")` which yields reading-order sorted coordinate blocks.
+   - Filters out text blocks that intersect with the bounding box of any detected tables.
+   - Normalizes text spacing and removes boilerplate preamble text using routines defined in [pdf_cleaner.py](file:///home/krisharish/Documents/complyguard-sebi-gff-hackathon-2026/app/ingestion/pdf_cleaner.py).
+3. **Hierarchy & Metadata Mapping**:
+   - Identifies structural headers:
+     - **Annexures**: Matched using regex e.g. `^Annexure\s+[A-Z0-9]+`.
+     - **Sections**: Matched using Roman numerals `^([I|V|X|L|C|D|M]+)\.`.
+     - **Subsections**: Matched using alphabetical items `^([A-Z])\.`.
+     - **Clauses**: Matched using numeric hierarchies `^(\d+(?:\.\d+)*)\.?\s+\S`.
+   - Computes parent-child relations: a dotted decimal clause number (e.g. `3.2.1`) has its parent mapped as its prefix (e.g. `3.2`).
+4. **Segmentation Confidence Score**:
+   - Assigns a confidence value to each chunk to enforce reliability guidelines:
+     - Clause numbers (`0.95`)
+     - Table grids (`0.90`)
+     - Structural boundaries/annexures (`0.90`)
+     - Continuation text blocks under an active clause (`0.85`)
+     - Unstructured body text / fallback splits (`0.50`)
+     - Orphans/short fragments (`0.65` / `0.60`)
+5. **Legacy Fallback**:
+   - If PyMuPDF throws errors (e.g. corrupted PDF binary, or mock test streams containing dummy headers), the parser catches the error and runs the legacy `extract_and_clean` + `split_into_clauses` routines, packaging them into uniform dictionary structures (with low confidence to flag them for human review).
 
 ## 4. Stage 3 — The per-clause LangGraph pipeline
 
@@ -157,29 +148,28 @@ handle that later lets a paused run be resumed by exactly matching thread.
 **`embedder_node`** — calls `app.embeddings.embedder.embed_texts([raw_clause])[0]` (see §5) to produce
 a 768-dim embedding vector for the clause.
 
-**`extractor_node`** — calls Groq (`llama-3.3-70b-versatile` by default, overridable via `GROQ_MODEL`)
-with a fixed prompt (`EXTRACTION_PROMPT`) asking for one JSON object:
-```json
-{
-  "requirement": "Clear description of what must be done",
-  "frequency": "one-time | monthly | quarterly | annual | ...",
-  "evidence_type": "What proof is needed",
-  "deadline_rule": "ISO date, a frequency keyword, or null"
-}
-```
-`temperature=0`, `max_tokens=800`. Retries up to `MAX_RETRIES = 3` times with `1.5 * attempt` second
-backoff on `groq.APIConnectionError` only (other errors propagate immediately). The response is
-stripped of Markdown code fences and the first/last `{`/`}` are used to isolate the JSON object before
-`json.loads`, tolerating models that wrap JSON in prose despite the instruction not to.
+**`extractor_node`** — calls Groq (`llama-3.3-70b-versatile` by default, overridable via `GROQ_MODEL`) with a fixed prompt (`EXTRACTION_PROMPT`) asking for structured JSON content including confidence ratings (`deadline_confidence`, `entity_confidence`, `evidence_confidence`, `overall_confidence`).
 
-**`differ_node`** — read-only. Ensures the Qdrant collection exists at the right vector size, then
-searches it for the single nearest neighbor to this clause's embedding.
-- No hit, or top score `< SIMILARITY_THRESHOLD (0.85)` → `diff_status = "new"`.
-- Top hit ≥ threshold and its text is identical after whitespace/case normalization → `"unchanged"`.
-- Top hit ≥ threshold but text differs → `"amended"`, and `similarity_match` carries the full matched
-  Qdrant payload (including the prior `obligation_id`, once `mapper_node` has stored one).
-- This node never writes to Qdrant — only reads. `mapper_node` performs the write, once it has a
-  concrete `obligation_id` to attach.
+**`validation_node`** — read-only. Parses the LLM's raw response against the `ExtractedObligation` Pydantic model:
+- **Field constraints**: Checks that `requirement`, `frequency`, and `evidence_type` are populated and non-empty.
+- **Date format verification**: Ensures `deadline_rule` is a valid ISO date (`YYYY-MM-DD`), standard frequency keyword, or null.
+- **Frequency validation**: Asserts that `frequency` matches recognized values (`one-time`, `monthly`, `quarterly`, `annual`).
+- **Confidence thresholds**:
+  - `>= 0.95`: Automatically approved (no validation warnings).
+  - `0.80 - 0.95`: Continues automatically but registers a validation warning.
+  - `< 0.80`: Registers a validation error and flags the state to force `human_review` downstream.
+- **Retry behavior**: If validation fails (due to JSON syntax, missing fields, invalid date/frequency, or confidence `< 80%`) and the retry counter is `<= 1`, the graph loops back to the `extractor_node` to retry once. If it fails a second time, it proceeds to the vector check but routes to `human_review` at the `differ` transition.
+
+**`differ_node`** — read-only. Implements the two-stage semantic comparison pipeline:
+- **Stage 1 (Retrieval)**: Queries the Qdrant collection for the top-3 nearest candidate clauses based on the embedding of the current clause. If no candidates are found, it skips the LLM step and classifies it as `"new"`.
+- **Stage 2 (LLM Comparison)**: Formats candidates alongside the new clause text and sends a prompt (`COMPARISON_PROMPT`) to the Groq LLM (e.g. `llama-3.3-70b-versatile`). The LLM evaluates semantic matches, returning a structured JSON object containing:
+  - `status`: `"NEW"`, `"AMENDED"`, `"SUPERSEDED"`, or `"UNCHANGED"`.
+  - `confidence`: Confidence score (`0.0` - `1.0`).
+  - `matched_obligation_id`: The ID of the matching candidate from older circulars.
+  - `changes`: List of modified fields (e.g. `["deadline"]`).
+  - `reason`: Explanation of comparison details.
+- **Auditing**: Records comparison results (status, changes, reasons, confidence) in the `AuditTrail` table by calling `_write_audit_entry` with `node_name="differ"`.
+- **Normalization**: Maps uppercase LLM status back to lowercase `diff_status` (`"new"`, `"amended"`, `"superseded"`, `"unchanged"`) and resolves `similarity_match` to the corresponding candidate hit, ensuring full downstream compatibility.
 
 **`human_review_node`** — reached only on `"amended"`/`"superseded"` (from `differ`) or `"invalid"`
 (from `evidence_check`). Calls `langgraph.types.interrupt({...})` with the clause id, extracted
@@ -252,15 +242,22 @@ pair against `DATABASE_URL` (default `postgresql://regops:regops@localhost:5433/
 `get_db()` is the FastAPI dependency; every non-FastAPI call site (graph nodes, services) opens its
 own `SessionLocal()` and closes it in a `finally` block.
 
-**`app/db/models.py`** — imports `Base` from `database.py` (not a second `declarative_base()`) so
-`Base.metadata.create_all()` in `app/api/main.py`'s lifespan hook picks up all four tables:
+**`app/db/migrate_v2.py`** — Handles dynamic database migrations during backend initialization, executing ALTER statements to add missing version-tracking columns (`previous_obligation_id`, `amended_obligation_id`, `superseded_obligation_id`, `origin_circular_id`, `clause_uuid`) to the `obligations` table without corrupting historical database assets.
+
+**`app/db/models.py`** — Imports `Base` from `database.py` and registers both legacy tables (for backwards compatibility) and the new lineage nodes. SQLAlchemy `relationship` mappings are configured to bind the regulatory graph:
 
 | Table | Purpose | Key columns |
 |---|---|---|
-| `obligations` | one row per distinct compliance requirement | `id`, `clause_id`, `requirement`, `frequency`, `evidence_type`, `deadline_rule`, `status` (active/superseded) |
-| `tasks` | the trackable instance of an obligation | `id`, `obligation_id` (FK), `owner`, `due_date`, `status` (pending/met/overdue) |
-| `evidence_log` | proof attached against a task | `id`, `task_id` (FK), `file_ref`, `submitted_at` |
-| `audit_trail` | immutable, hash-chained action log | `id`, `thread_id`, `node_name`, `action` (JSON), `actor`, `timestamp`, `prev_hash`, `hash` |
+| `circulars` | Tracks circular documents | `id`, `title`, `issue_date` |
+| `sections` | Sections inside a circular | `id`, `title`, `circular_id` (FK) |
+| `clauses` | Segmented clause layout blocks | `id`, `clause_number`, `text`, `section_id` (FK) |
+| `obligations` | Version-controlled compliance obligations | `id`, `clause_id`, `requirement`, `frequency`, `evidence_type`, `deadline_rule`, `intermediary`, `status`, plus version lineage FKs (`previous_obligation_id`, `amended_obligation_id`, `superseded_obligation_id`, `origin_circular_id`, `clause_uuid`) |
+| `deadlines` | Tracks obligation deadlines | `id`, `due_date`, `status`, `obligation_id` (FK) |
+| `evidence` | Proof attached to a lineage obligation | `id`, `file_ref`, `submitted_at`, `obligation_id` (FK) |
+| `applicable_entities` | Target intermediary scopes | `id`, `entity_name`, `obligation_id` (FK) |
+| `tasks` | Leg. trackable task (backwards compatible) | `id`, `obligation_id` (FK), `owner`, `due_date`, `status` |
+| `evidence_log` | Leg. proof log (backwards compatible) | `id`, `task_id` (FK), `file_ref`, `submitted_at` |
+| `audit_trail` | Hash-chained action log | `id`, `thread_id`, `node_name`, `action` (JSON), `actor`, `timestamp`, `prev_hash`, `hash` |
 
 **Audit hash chain**: `compute_audit_hash(prev_hash, action, timestamp) = sha256(prev_hash +
 json.dumps(action, sort_keys=True) + timestamp.isoformat())`. Every `_write_audit_entry()` call reads
@@ -297,7 +294,9 @@ say "this obligation's clause is genuinely gone" rather than "its clause failed 
 | `GET /evidence` | all evidence rows, joined back to their obligation |
 | `POST /evidence` | attaches an `EvidenceLog` row to the `Task` for a given `obligation_id` (404 if no task exists yet) |
 | `GET /audit_log` | full audit trail, newest first, with node names mapped to display labels via `_AUDIT_ACTION_LABELS` |
-| `POST /review/{thread_id}/decision` | resumes a paused `human_review` interrupt; **rejects with 409** if the thread isn't actually paused (`Command(resume=...)` on a non-paused/nonexistent thread is otherwise a silent no-op that would look like success) |
+| `GET /review/queue` | fetches list of pending review items from the database review workspace queue |
+| `POST /review/{thread_id}/submit` | resumes a paused `human_review` interrupt asynchronously via background tasks |
+| `POST /review/{thread_id}/decision` | resumes a paused `human_review` interrupt synchronously (backward-compatible) |
 
 `/upload`'s per-clause loop tracks `matched_obligation_ids` from three sources: a completed run's
 `task.obligation_id`, an `"unchanged"` clause's `similarity_match` (mapper no-oped but the obligation
@@ -347,14 +346,24 @@ Mirrors the pipeline's own layering:
 
 Run everything: `python -m pytest`. Run one area: `python -m pytest tests/graph/`.
 
-## 11. Known incomplete pieces
+## 11. Observability, Telemetry & Health Checks
 
-- `app/db/seed_synthetic.py` and `scripts/generate_synthetic_data.py` are placeholder stubs
-  (`raise NotImplementedError`) — the intended output (6 obligations, 143 tasks, 129 evidence rows, 25
-  grievances, org roles) is documented in their docstrings but not yet implemented.
-- `evidence_status = "invalid"` is a reserved state in `ComplianceState` and routed in the graph, but
-  no node currently produces it — evidence validation logic doesn't exist yet.
-- OCR for scanned/image PDF pages is flagged (`[WARN]` in `pdf_cleaner.extract_pages`) but not
-  implemented; such pages silently contribute near-empty text to the pipeline.
-- The audit-hash-chain write path is not safe under concurrent writers (§6).
-- No authentication/authorization on any endpoint, including `POST /review/{thread_id}/decision`.
+The pipeline includes built-in telemetry counters and latency monitors exposed via REST:
+- **Metrics Aggregator** (`app/services/metrics.py`): Tracks process-wide latencies (LLM, embeddings, search, total processing time) and counters (retries, validation failures, score distribution).
+- **Prometheus Scraping**: Accessible via `GET /metrics` in standard prometheus exporter representation, or as structured JSON via `GET /metrics?format=json`.
+- **Deep Health Probes**: Accessible via `GET /health` to perform verification checks on PostgreSQL connectivity and Qdrant collections.
+
+## 12. Advanced Compliance Analytics Dashboard
+
+The web client dashboard (`frontend/src/components/views/GapDashboard.jsx`) consolidates extracted compliance rules and provides reports:
+- **Compliance Score**: Circular progress meters displaying the fraction of met vs active obligations.
+- **Lineage Impact Charts**: Aggregates and charts the distribution of obligations per circular.
+- **Department Breakdown**: Maps legislative actions to departments (*Finance*, *Corporate Compliance*, *System Audit*, *Portfolio Ops*, *Relations*).
+- **Report Exports**: Download spreadsheet archives (`XLS` format) and raw data files (`CSV`) for compliance audit logging.
+
+## 13. Known incomplete pieces
+
+- `scripts/generate_synthetic_data.py` is a placeholder stub (`raise NotImplementedError`).
+- `evidence_status = "invalid"` is a reserved state in `ComplianceState` and routed in the graph, but no node currently produces it — evidence validation logic doesn't exist yet.
+- OCR for scanned/image PDF pages is flagged (`[WARN]` in `pdf_cleaner.extract_pages`) but not implemented; such pages silently contribute near-empty text to the pipeline.
+- No authentication/authorization on any endpoint, including `POST /review/{thread_id}/submit` or dashboard downloads.
