@@ -53,10 +53,28 @@ def _cleanup_uploaded(filename: str):
             pass
 
 
-def test_health_check_returns_ok():
-    response = client.get("/health")
+def test_health_check_reports_healthy_when_dependencies_reachable():
+    app.dependency_overrides[get_db] = _override_get_db_with_sqlite()
+    try:
+        with patch("app.api.main.get_client") as mock_get_client:
+            mock_get_client.return_value.get_collections.return_value = []
+            response = client.get("/health")
+    finally:
+        app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "healthy", "database": "reachable", "qdrant": "reachable"}
+
+
+def test_health_check_returns_503_when_qdrant_down():
+    app.dependency_overrides[get_db] = _override_get_db_with_sqlite()
+    try:
+        with patch("app.api.main.get_client", side_effect=RuntimeError("no qdrant")):
+            response = client.get("/health")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 503
+    assert response.json()["detail"]["qdrant"].startswith("error")
+    assert response.json()["detail"]["database"] == "reachable"
 
 
 def test_gaps_returns_real_tasks_from_the_database():

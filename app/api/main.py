@@ -13,6 +13,7 @@ import uuid
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.routes_review import router as review_router
@@ -35,6 +36,7 @@ from app.services.gap_engine import (
     get_gaps, update_all_task_statuses,
     has_company_obligations, run_gap_analysis,
 )
+from app.services.audit import verify_chain
 from app.services.supersession import mark_superseded_obligations
 from app.services.workflow_state import WorkflowState, get_state, advance
 
@@ -69,27 +71,21 @@ app.include_router(workflow_router)
 
 @app.get("/health")
 def health_check(db: Session = Depends(get_db)):
-    from unittest.mock import Mock
-    import sys
-    if "pytest" in sys.modules and not isinstance(db, Mock):
-        return {"status": "ok"}
-
     health_status = {
         "status": "healthy",
         "database": "unreachable",
-        "qdrant": "unreachable"
+        "qdrant": "unreachable",
     }
 
     try:
-        db.execute(Base.metadata.schema is not None and "SELECT 1" or "SELECT 1")
+        db.execute(text("SELECT 1"))
         health_status["database"] = "reachable"
     except Exception as e:
         health_status["status"] = "unhealthy"
         health_status["database"] = f"error: {e}"
 
     try:
-        qdrant_client = get_client()
-        qdrant_client.get_collections()
+        get_client().get_collections()
         health_status["qdrant"] = "reachable"
     except Exception as e:
         health_status["status"] = "unhealthy"
@@ -589,6 +585,12 @@ def list_audit_log(db: Session = Depends(get_db)):
             "timestamp": r.timestamp.isoformat() if r.timestamp else None,
         })
     return results
+
+
+@app.get("/audit_log/verify")
+def verify_audit_log(db: Session = Depends(get_db)):
+    """Re-compute the whole hash chain and report the first tampered/missing entry."""
+    return verify_chain(db)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
