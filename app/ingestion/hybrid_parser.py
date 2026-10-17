@@ -6,9 +6,12 @@ Preserves document structures, maps section/clause hierarchies, extracts tables,
 computes segmentation confidence scores, and falls back to legacy parsing.
 """
 
+import logging
 import os
 import re
 import fitz  # PyMuPDF
+
+logger = logging.getLogger(__name__)
 
 from app.ingestion.pdf_cleaner import (
     extract_and_clean,
@@ -60,7 +63,7 @@ def parse_pdf_structured(pdf_path: str) -> list[dict]:
     try:
         doc = fitz.open(pdf_path)
     except Exception as e:
-        print(f"[WARN] Failed to open PDF with PyMuPDF: {e}. Running legacy fallback.")
+        logger.warning("Failed to open PDF with PyMuPDF: %s. Running legacy fallback.", e)
         return run_legacy_fallback(pdf_path)
 
     structured_chunks = []
@@ -100,13 +103,13 @@ def parse_pdf_structured(pdf_path: str) -> list[dict]:
                 if md_text.strip():
                     page_tables.append({"bbox": tab.bbox, "text": md_text})
         except Exception as e:
-            print(f"[WARN] Table extraction failed on page {page_num}: {e}")
+            logger.warning("Table extraction failed on page %s: %s", page_num, e)
 
         # 2. Extract layout text blocks
         try:
             blocks = page.get_text("blocks")
         except Exception as e:
-            print(f"[WARN] Block extraction failed on page {page_num}: {e}. Skipping page.")
+            logger.warning("Block extraction failed on page %s: %s. Skipping page.", page_num, e)
             continue
 
         # Sort blocks by vertical position, then horizontal (reading order)
@@ -242,13 +245,13 @@ def parse_pdf_structured(pdf_path: str) -> list[dict]:
 
     # Flag document-wide low confidence if no clause numbers were detected at all
     if clause_headers_count == 0 and structured_chunks:
-        print("[WARN] No clause numbers detected in PDF. Flagging overall low confidence.")
+        logger.warning("No clause numbers detected in PDF. Flagging overall low confidence.")
         for chunk in structured_chunks:
             if chunk["type"] == "obligation":
                 chunk["confidence"] = 0.50
 
     if not structured_chunks:
-        print("[WARN] Structured parser returned no chunks. Running legacy fallback.")
+        logger.warning("Structured parser returned no chunks. Running legacy fallback.")
         return run_legacy_fallback(pdf_path)
 
     return structured_chunks

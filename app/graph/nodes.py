@@ -1,6 +1,8 @@
 """LangGraph pipeline nodes for the RegOps AI compliance-obligation pipeline."""
 import hashlib
+import html
 import json
+import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from datetime import datetime as dt_datetime
@@ -10,10 +12,15 @@ import time
 import threading
 import re
 
-from groq import APIConnectionError, Groq
 from langgraph.types import interrupt
 
+logger = logging.getLogger(__name__)
+
 _audit_lock = threading.Lock()
+
+
+def _thread_id(state) -> str:
+    return f"{state.get('circular_id')}:{state.get('clause_id')}"
 
 
 def parse_json_robust(content: str) -> dict:
@@ -37,6 +44,8 @@ def parse_json_robust(content: str) -> dict:
 from app.db.database import SessionLocal
 from app.db.models import AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause, Evidence, Deadline, ApplicableEntity, ReviewQueue
 from app.embeddings.embedder import embed_texts
+from app.llm.groq_client import chat_completion
+from app.services.audit import compute_audit_hash  # noqa: F401  (re-exported)
 from app.embeddings.qdrant_client import ensure_collection, get_client, search, upsert_chunks
 from app.services.metrics import metrics_collector
 
@@ -50,14 +59,14 @@ FREQUENCY_DAYS = {
 
 
 def chunker_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering chunker stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "chunker", _thread_id(state))
     raw_clause = state["raw_clause"].strip()
     heading = state.get("heading") or raw_clause.splitlines()[0][:80].strip()
     return {"raw_clause": raw_clause, "heading": heading}
 
 
 def embedder_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering embedder stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "embedder", _thread_id(state))
     start = time.time()
     embedding = embed_texts([state["raw_clause"]])[0]
     metrics_collector.record_embedding_latency(time.time() - start)
@@ -76,14 +85,6 @@ def resolve_due_date(deadline_rule: str | None, today: date) -> date | None:
         return None
     return today + timedelta(days=days)
 
-
-def compute_audit_hash(prev_hash: str, action: dict, timestamp: datetime) -> str:
-    payload = prev_hash + json.dumps(action, sort_keys=True) + timestamp.isoformat()
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-MAX_RETRIES = 3
 
 EXTRACTION_PROMPT = """
 You are a regulatory compliance AI. Read the SEBI circular clause below and extract
@@ -110,32 +111,13 @@ Clause to analyze:
 
 
 def extractor_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering extractor stage for clause {state.get('clause_id')}...")
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY environment variable is not set")
-
-    client = Groq(api_key=api_key)
+    logger.info("stage=%s thread=%s", "extractor", _thread_id(state))
     prompt = EXTRACTION_PROMPT.format(clause_text=state["raw_clause"])
 
-    response = None
     start = time.time()
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = client.chat.completions.create(
-                model=GROQ_MODEL,
-                temperature=0,
-                max_tokens=800,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            break
-        except APIConnectionError:
-            if attempt == MAX_RETRIES - 1:
-                raise
-            time.sleep(1.5 * (attempt + 1))
+    content = chat_completion(prompt)
     metrics_collector.record_llm_latency(time.time() - start)
 
-    content = response.choices[0].message.content
     obligation = parse_json_robust(content)
     return {"extracted_obligation": obligation}
 
@@ -199,7 +181,7 @@ class ExtractedObligation(BaseModel):
 
 
 def validation_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering validation stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "validation", _thread_id(state))
     extracted = state.get("extracted_obligation")
     errors = []
     warnings = []
@@ -275,7 +257,7 @@ def _normalize(text: str) -> str:
 
 
 def differ_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering differ stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "differ", _thread_id(state))
     client = get_client()
     ensure_collection(client, vector_size=len(state["embedding"]))
     
@@ -304,34 +286,15 @@ def differ_node(state: ComplianceState) -> dict:
         candidates_text += f"\nCandidate {idx+1} [Score: {score:.3f}]:\n- Obligation ID: {obligation_id}\n- Clause ID: {clause_id}\n- Text: {text}\n"
 
     # Stage 2: Compare using LLM
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY environment variable is not set")
-
-    client_groq = Groq(api_key=api_key)
     prompt = COMPARISON_PROMPT.format(
         candidates_text=candidates_text,
         new_clause_text=state["raw_clause"]
     )
-    
-    response = None
+
     start_llm = time.time()
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = client_groq.chat.completions.create(
-                model=GROQ_MODEL,
-                temperature=0,
-                max_tokens=800,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            break
-        except APIConnectionError:
-            if attempt == MAX_RETRIES - 1:
-                raise
-            time.sleep(1.5 * (attempt + 1))
+    content = chat_completion(prompt)
     metrics_collector.record_llm_latency(time.time() - start_llm)
-            
-    content = response.choices[0].message.content
+
     comparison = parse_json_robust(content)
     
     status_upper = comparison.get("status", "NEW").upper()
@@ -386,7 +349,7 @@ def differ_node(state: ComplianceState) -> dict:
 
 
 def mapper_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering mapper stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "mapper", _thread_id(state))
     if state.get("human_decision") == "reject" or state.get("diff_status") == "unchanged":
         return {}
 
@@ -466,17 +429,26 @@ def mapper_node(state: ComplianceState) -> dict:
     finally:
         db.close()
 
-    client = get_client()
-    upsert_chunks(
-        client,
-        chunks=[state["raw_clause"]],
-        vectors=[state["embedding"]],
-        metadatas=[{
-            "circular_id": state["circular_id"],
-            "clause_id": state["clause_id"],
-            "obligation_id": obligation_id,
-        }],
-    )
+    try:
+        client = get_client()
+        upsert_chunks(
+            client,
+            chunks=[state["raw_clause"]],
+            vectors=[state["embedding"]],
+            metadatas=[{
+                "circular_id": state["circular_id"],
+                "clause_id": state["clause_id"],
+                "obligation_id": obligation_id,
+            }],
+        )
+    except Exception:
+        # Postgres and Qdrant can't share a transaction: the obligation is already
+        # committed, so say how to repair the missing vector.
+        logger.exception(
+            "Obligation %s was saved but its vector was not written to Qdrant; "
+            "run POST /admin/reconcile-vectors to repair it", obligation_id,
+        )
+        raise
 
     return {
         "task": {
@@ -488,7 +460,7 @@ def mapper_node(state: ComplianceState) -> dict:
 
 
 def evidence_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering evidence check stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "evidence check", _thread_id(state))
     task_info = state.get("task")
     if not task_info:
         return {"evidence_status": "missing"}
@@ -506,7 +478,7 @@ def evidence_node(state: ComplianceState) -> dict:
 
 
 def gap_engine_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering gap engine stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "gap engine", _thread_id(state))
     task_info = state.get("task")
     if not task_info:
         return {}
@@ -556,31 +528,40 @@ import difflib
 
 
 def generate_text_diff(old_text: str, new_text: str) -> str:
+    """Word-level diff as HTML. The result is rendered with innerHTML by the review UI and
+    the words come from an uploaded PDF, so every word is HTML-escaped; only the <del>/<ins>
+    wrappers added here are markup."""
     if not old_text:
-        return new_text
-    
-    old_words = old_text.split()
-    new_words = new_text.split()
-    
+        return html.escape(new_text)
+
+    old_words = [html.escape(w) for w in old_text.split()]
+    new_words = [html.escape(w) for w in new_text.split()]
+
     matcher = difflib.SequenceMatcher(None, old_words, new_words)
     diff_html = []
-    
+
+    def deleted(words):
+        return f"<del class='bg-red-100 text-red-700 line-through px-1 rounded'>{' '.join(words)}</del>"
+
+    def inserted(words):
+        return f"<ins class='bg-green-100 text-green-700 font-semibold px-1 rounded'>{' '.join(words)}</ins>"
+
     for opcode, a_start, a_end, b_start, b_end in matcher.get_opcodes():
         if opcode == 'equal':
             diff_html.append(" ".join(old_words[a_start:a_end]))
         elif opcode == 'replace':
-            diff_html.append(f"<del class='bg-red-100 text-red-700 line-through px-1 rounded'>{' '.join(old_words[a_start:a_end])}</del>")
-            diff_html.append(f"<ins class='bg-green-100 text-green-700 font-semibold px-1 rounded'>{' '.join(new_words[b_start:b_end])}</ins>")
+            diff_html.append(deleted(old_words[a_start:a_end]))
+            diff_html.append(inserted(new_words[b_start:b_end]))
         elif opcode == 'delete':
-            diff_html.append(f"<del class='bg-red-100 text-red-700 line-through px-1 rounded'>{' '.join(old_words[a_start:a_end])}</del>")
+            diff_html.append(deleted(old_words[a_start:a_end]))
         elif opcode == 'insert':
-            diff_html.append(f"<ins class='bg-green-100 text-green-700 font-semibold px-1 rounded'>{' '.join(new_words[b_start:b_end])}</ins>")
-            
+            diff_html.append(inserted(new_words[b_start:b_end]))
+
     return " ".join(diff_html)
 
 
 def human_review_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering human review stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "human review", _thread_id(state))
     prev_text = None
     similarity_match = state.get("similarity_match")
     if similarity_match:
@@ -613,7 +594,11 @@ def human_review_node(state: ComplianceState) -> dict:
                 llm_explanation=explanation,
                 confidence=confidence,
                 extracted_obligation=state.get("extracted_obligation"),
-                status="pending"
+                status="pending",
+                clause_uuid=state.get("clause_uuid"),
+                clause_number=state.get("clause_num"),
+                section=state.get("section"),
+                page=state.get("page"),
             )
             db.add(review_item)
             db.commit()
@@ -651,7 +636,7 @@ def human_review_node(state: ComplianceState) -> dict:
             review_item.extracted_obligation = extracted_obligation
             db.commit()
     except Exception as e:
-        print(f"[WARNING] Failed to update ReviewQueue status: {e}")
+        logger.warning("Failed to update ReviewQueue status for %s: %s", thread_id, e)
     finally:
         db.close()
 
@@ -669,7 +654,7 @@ def human_review_node(state: ComplianceState) -> dict:
 
 
 def finalize_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Finalizing pipeline for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "finalize", _thread_id(state))
     _write_audit_entry(
         thread_id=f"{state['circular_id']}:{state['clause_id']}",
         node_name="finalize",

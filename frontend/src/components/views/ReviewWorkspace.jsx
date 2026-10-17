@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
-import { getReviewQueue, submitReviewAction } from "../../api";
+import { getReviewAnalytics, getReviewQueue, submitReviewAction } from "../../api";
+import { sourceLabel } from "../../sourceLabel";
 
 export default function ReviewWorkspace() {
   const [queue, setQueue] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
 
   const fetchQueue = async () => {
     try {
@@ -24,6 +26,7 @@ export default function ReviewWorkspace() {
         };
       }));
       setError(null);
+      getReviewAnalytics().then(setAnalytics).catch(() => setAnalytics(null));
     } catch (err) {
       console.error(err);
       setError("Failed to fetch pending reviews. Make sure the backend is running.");
@@ -133,6 +136,22 @@ export default function ReviewWorkspace() {
         </span>
       </div>
 
+      {analytics && analytics.overall.reviewed > 0 && (
+        <div className="mt-4 rounded-2xl border border-neutral-100 bg-neutral-50/60 p-4">
+          <p className="font-mono text-[10px] font-bold uppercase tracking-wider text-neutral-400">
+            Reviewer overrides by model confidence
+          </p>
+          <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-neutral-600">
+            {analytics.by_confidence_band.map((b) => (
+              <span key={b.band}>
+                <span className="font-semibold">{b.band}</span>:{" "}
+                {b.override_rate == null ? "no reviews yet" : `${Math.round(b.override_rate * 100)}% overridden (${b.reviewed} reviewed)`}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="mt-8 space-y-10">
         {queue.map((item) => {
           const overallConf = item.confidence || 0.0;
@@ -154,7 +173,7 @@ export default function ReviewWorkspace() {
                   </span>
                 </div>
                 <span className="font-mono text-[10px] text-neutral-400">
-                  Thread: {item.id}
+                  {sourceLabel(item.source) && <>{sourceLabel(item.source)} &middot; </>}Thread: {item.id}
                 </span>
               </div>
 

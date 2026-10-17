@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Float
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Float, Integer
 from sqlalchemy.orm import relationship
 import datetime
 
@@ -30,6 +30,7 @@ class Clause(Base):
     id = Column(String, primary_key=True)
     clause_number = Column(String)
     text = Column(Text)
+    page = Column(Integer, nullable=True)
     section_id = Column(String, ForeignKey("sections.id"))
 
     section = relationship("Section")
@@ -145,6 +146,11 @@ class ReviewQueue(Base):
     confidence = Column(Float, nullable=True)
     extracted_obligation = Column(JSON, nullable=True)
     status = Column(String, default="pending")
+    # Where in the source circular the clause came from, so a reviewer can verify it
+    clause_uuid = Column(String, nullable=True)
+    clause_number = Column(String, nullable=True)
+    section = Column(String, nullable=True)
+    page = Column(Integer, nullable=True)
 
 
 class CompanyObligation(Base):
@@ -180,4 +186,19 @@ class WorkflowStateRecord(Base):
     __tablename__ = "workflow_state"
     id = Column(String, primary_key=True, default="current")
     state = Column(String, default="IDLE")
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class UploadJob(Base):
+    """Background run of the per-clause pipeline for one uploaded circular."""
+    __tablename__ = "upload_jobs"
+    id = Column(String, primary_key=True)
+    filename = Column(String)
+    circular_id = Column(String)
+    # queued | running | completed | failed
+    status = Column(String, default="queued")
+    total_clauses = Column(Integer, default=0)
+    processed_clauses = Column(Integer, default=0)
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)

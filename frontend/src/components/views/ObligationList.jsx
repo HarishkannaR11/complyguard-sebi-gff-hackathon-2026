@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { sourceLabel } from "../../sourceLabel";
 import StatusBadge from "../shared/StatusBadge";
 
 const INTERMEDIARY_COLORS = {
@@ -84,6 +85,11 @@ export default function ObligationList({ obligations, evidence, onAttachEvidence
                     <p className="font-mono text-[11px] font-medium tracking-wide text-neutral-400">
                       SOURCE TEXT (TRACEABILITY)
                     </p>
+                    {sourceLabel(ob.source) && (
+                      <p className="mt-1 font-mono text-[11px] font-semibold text-violet-600">
+                        {ob.circularName ? `${ob.circularName} \u00b7 ` : ""}{sourceLabel(ob.source)}
+                      </p>
+                    )}
                     <p className="mt-1.5 text-sm italic leading-relaxed text-neutral-600">
                       {ob.sourceChunk}
                     </p>

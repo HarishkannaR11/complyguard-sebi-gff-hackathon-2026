@@ -1,13 +1,18 @@
 """Human-review API routes: resume a paused compliance-pipeline run with a decision."""
 import json
+import logging
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from langgraph.types import Command
 
+from app.api.security import Principal, require_api_key, resolve_actor
 from app.db.database import get_db
 from app.db.models import ReviewQueue
 from app.graph.build_graph import build_graph
+from app.services.review_analytics import summarize_reviews
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -21,7 +26,7 @@ def _get_graph():
     return _graph
 
 
-def async_resume_graph(thread_id: str, action: str, obligation_data: dict = None):
+def async_resume_graph(thread_id: str, action: str, obligation_data: dict = None, actor: str = "reviewer"):
     try:
         graph = build_graph()
         config = {"configurable": {"thread_id": thread_id}}
@@ -36,11 +41,11 @@ def async_resume_graph(thread_id: str, action: str, obligation_data: dict = None
             decision = "approve"
             
         graph.invoke(
-            Command(resume={"decision": decision, "actor": "reviewer"}),
+            Command(resume={"decision": decision, "actor": actor}),
             config=config,
         )
-    except Exception as e:
-        print(f"[ERROR] Asynchronous resume failed for thread {thread_id}: {e}")
+    except Exception:
+        logger.exception("Asynchronous resume failed for thread %s", thread_id)
 
 
 @router.get("/review/queue")
@@ -58,9 +63,21 @@ def get_review_queue(db: Session = Depends(get_db)):
             "llm_explanation": item.llm_explanation,
             "confidence": item.confidence,
             "extracted_obligation": item.extracted_obligation,
-            "status": item.status
+            "status": item.status,
+            "source": {
+                "circular_id": item.circular_id,
+                "clause_number": item.clause_number,
+                "section": item.section,
+                "page": item.page,
+            },
         })
     return results
+
+
+@router.get("/review/analytics")
+def get_review_analytics(db: Session = Depends(get_db)):
+    """How often reviewers overrode the model, by confidence band."""
+    return summarize_reviews(db.query(ReviewQueue).all())
 
 
 class ReviewActionPayload(BaseModel):
@@ -73,7 +90,8 @@ def submit_review_action(
     thread_id: str,
     payload: ReviewActionPayload,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_api_key),
 ):
     graph = _get_graph()
     config = {"configurable": {"thread_id": thread_id}}
@@ -94,7 +112,10 @@ def submit_review_action(
 
     if is_paused:
         # Run graph invoke in background task
-        background_tasks.add_task(async_resume_graph, thread_id, payload.action, payload.obligation_data)
+        background_tasks.add_task(
+            async_resume_graph, thread_id, payload.action, payload.obligation_data,
+            resolve_actor(principal, None),
+        )
         return {"status": "resumed_async"}
 
     if item:
@@ -111,8 +132,11 @@ def submit_decision(
     thread_id: str,
     decision: str,
     actor: str = "reviewer",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_api_key),
 ):
+    # With auth on, the audit actor is the authenticated user, not a client-supplied name.
+    actor = resolve_actor(principal, actor)
     graph = _get_graph()
     config = {"configurable": {"thread_id": thread_id}}
 

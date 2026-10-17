@@ -140,39 +140,41 @@ def seed() -> None:
         )
         db.add(ev)
 
-        # 4. Audit Trail Hash Chain
-        # Entry 1: Seeding Obligations
-        action1 = {"action": "seed_obligations", "count": 6}
-        ts1 = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=2)
-        hash1 = compute_audit_hash("", action1, ts1)
+        # 4. Audit Trail Hash Chain. Only start a chain on an empty audit table: the seeded rows
+        # use a genesis prev_hash, so adding them beside existing rows would fork the chain.
+        if db.query(AuditTrail).first() is None:
+            # Entry 1: Seeding Obligations
+            action1 = {"action": "seed_obligations", "count": 6}
+            ts1 = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=2)
+            hash1 = compute_audit_hash("", action1, ts1)
         
-        audit1 = AuditTrail(
-            id=str(uuid.uuid4()),
-            thread_id="seed:obligations",
-            node_name="finalize",
-            action=action1,
-            actor="system",
-            timestamp=ts1,
-            prev_hash="",
-            hash=hash1
-        )
+            audit1 = AuditTrail(
+                id=str(uuid.uuid4()),
+                thread_id="seed:obligations",
+                node_name="finalize",
+                action=action1,
+                actor="system",
+                timestamp=ts1,
+                prev_hash="",
+                hash=hash1
+            )
         
-        # Entry 2: Seeding Tasks & Evidence
-        action2 = {"action": "seed_evidence", "task_id": "task-collateral"}
-        ts2 = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=1)
-        hash2 = compute_audit_hash(hash1, action2, ts2)
+            # Entry 2: Seeding Tasks & Evidence
+            action2 = {"action": "seed_evidence", "task_id": "task-collateral"}
+            ts2 = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=1)
+            hash2 = compute_audit_hash(hash1, action2, ts2)
         
-        audit2 = AuditTrail(
-            id=str(uuid.uuid4()),
-            thread_id="seed:evidence",
-            node_name="finalize",
-            action=action2,
-            actor="system",
-            timestamp=ts2,
-            prev_hash=hash1,
-            hash=hash2
-        )
-        db.add_all([audit1, audit2])
+            audit2 = AuditTrail(
+                id=str(uuid.uuid4()),
+                thread_id="seed:evidence",
+                node_name="finalize",
+                action=action2,
+                actor="system",
+                timestamp=ts2,
+                prev_hash=hash1,
+                hash=hash2
+            )
+            db.add_all([audit1, audit2])
 
         db.commit()
         print("Successfully seeded database with synthetic data.")

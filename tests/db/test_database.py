@@ -4,7 +4,8 @@ from app.db.database import make_engine
 
 def test_make_engine_uses_provided_url():
     engine = make_engine("sqlite:///:memory:")
-    assert str(engine.url) == "sqlite:///:memory:"
+    assert engine.url.drivername == "sqlite"
+    assert engine.url.database == ":memory:"
 
 
 def test_make_engine_defaults_to_env_var(monkeypatch):
