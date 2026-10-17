@@ -1,0 +1,546 @@
+{
+  "description": "Synthetic SEBI-stockbroker-style clauses (not real circular text) with expected structured extractions. Labels follow the extractor prompt contract: deadline_rule is an ISO date, a frequency keyword, or null; null and 'one-time' are treated as equal. A list means any of those answers is accepted (for clauses that don't map cleanly onto the vocabulary, e.g. weekly or half-yearly).",
+  "cases": [
+    {
+      "id": "ext-01",
+      "clause": "Every stock broker shall appoint a Compliance Officer and intimate the name and contact details to the Exchange.",
+      "expected": {
+        "frequency": "one-time",
+        "deadline_rule": null,
+        "requirement_keywords": [
+          [
+            "compliance officer"
+          ],
+          [
+            "appoint"
+          ]
+        ],
+        "evidence_keywords": [
+          "intimat",
+          "letter",
+          "resolution",
+          "appointment"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-02",
+      "clause": "Stock brokers shall submit the half-yearly internal audit report to the Exchange within 60 days from the end of the half year.",
+      "expected": {
+        "frequency": [
+          "annual",
+          "quarterly"
+        ],
+        "deadline_rule": null,
+        "requirement_keywords": [
+          [
+            "audit report"
+          ]
+        ],
+        "evidence_keywords": [
+          "audit report"
+        ]
+      },
+      "hard": true
+    },
+    {
+      "id": "ext-03",
+      "clause": "Stock brokers shall file the monthly client fund and securities reconciliation statement with the Exchange by the 7th day of the following month.",
+      "expected": {
+        "frequency": "monthly",
+        "deadline_rule": "monthly",
+        "requirement_keywords": [
+          [
+            "reconcil"
+          ],
+          [
+            "fund"
+          ]
+        ],
+        "evidence_keywords": [
+          "statement",
+          "reconciliation"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-04",
+      "clause": "Every stock broker shall conduct a quarterly review of client margin collection and report any shortfall to the Exchange within 15 days of quarter end.",
+      "expected": {
+        "frequency": "quarterly",
+        "deadline_rule": "quarterly",
+        "requirement_keywords": [
+          [
+            "margin"
+          ],
+          [
+            "review",
+            "report"
+          ]
+        ],
+        "evidence_keywords": [
+          "report",
+          "review",
+          "statement"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-05",
+      "clause": "Stock brokers shall obtain and submit a net worth certificate from a practising chartered accountant annually.",
+      "expected": {
+        "frequency": "annual",
+        "deadline_rule": "annual",
+        "requirement_keywords": [
+          [
+            "net worth"
+          ]
+        ],
+        "evidence_keywords": [
+          "certificate"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-06",
+      "clause": "All stock brokers shall migrate to the revised client registration system on or before 2026-12-31.",
+      "expected": {
+        "frequency": "one-time",
+        "deadline_rule": "2026-12-31",
+        "requirement_keywords": [
+          [
+            "migrat"
+          ],
+          [
+            "registration"
+          ]
+        ],
+        "evidence_keywords": [
+          "confirmation",
+          "certificate",
+          "migration",
+          "acknowledg"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-07",
+      "clause": "Stock brokers shall maintain records of all client orders and trade confirmations for a minimum period of five years.",
+      "expected": {
+        "frequency": "one-time",
+        "deadline_rule": null,
+        "requirement_keywords": [
+          [
+            "record"
+          ],
+          [
+            "order",
+            "trade"
+          ]
+        ],
+        "evidence_keywords": [
+          "record",
+          "log",
+          "retention"
+        ]
+      },
+      "hard": true
+    },
+    {
+      "id": "ext-08",
+      "clause": "Stock brokers shall display the investor grievance redressal contact details prominently on their website at all times.",
+      "expected": {
+        "frequency": "one-time",
+        "deadline_rule": null,
+        "requirement_keywords": [
+          [
+            "grievance",
+            "contact"
+          ],
+          [
+            "website",
+            "display"
+          ]
+        ],
+        "evidence_keywords": [
+          "screenshot",
+          "website",
+          "display"
+        ]
+      },
+      "hard": true
+    },
+    {
+      "id": "ext-09",
+      "clause": "Every stock broker shall conduct a cyber security audit annually through a CERT-In empanelled auditor and submit the report to the Exchange.",
+      "expected": {
+        "frequency": "annual",
+        "deadline_rule": "annual",
+        "requirement_keywords": [
+          [
+            "cyber"
+          ],
+          [
+            "audit"
+          ]
+        ],
+        "evidence_keywords": [
+          "audit report",
+          "report"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-10",
+      "clause": "Stock brokers shall upload the weekly risk-based supervision data on the Exchange portal by Monday of each week.",
+      "expected": {
+        "frequency": [
+          "monthly",
+          "one-time"
+        ],
+        "deadline_rule": null,
+        "requirement_keywords": [
+          [
+            "risk"
+          ],
+          [
+            "upload",
+            "submit"
+          ]
+        ],
+        "evidence_keywords": [
+          "upload",
+          "portal",
+          "acknowledg"
+        ]
+      },
+      "hard": true
+    },
+    {
+      "id": "ext-11",
+      "clause": "Stock brokers must send a quarterly statement of accounts to every client within 30 days of the end of the quarter.",
+      "expected": {
+        "frequency": "quarterly",
+        "deadline_rule": "quarterly",
+        "requirement_keywords": [
+          [
+            "statement"
+          ],
+          [
+            "client"
+          ]
+        ],
+        "evidence_keywords": [
+          "statement",
+          "dispatch",
+          "email",
+          "log"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-12",
+      "clause": "Brokers shall complete the implementation of two-factor authentication for all client logins by 2026-09-30.",
+      "expected": {
+        "frequency": "one-time",
+        "deadline_rule": "2026-09-30",
+        "requirement_keywords": [
+          [
+            "two-factor",
+            "authentication"
+          ]
+        ],
+        "evidence_keywords": [
+          "implementation",
+          "report",
+          "certificate",
+          "test"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-13",
+      "clause": "Stock brokers shall conduct an annual training programme on anti-money laundering for all employees handling client accounts.",
+      "expected": {
+        "frequency": "annual",
+        "deadline_rule": "annual",
+        "requirement_keywords": [
+          [
+            "training",
+            "anti-money"
+          ],
+          [
+            "employee",
+            "staff"
+          ]
+        ],
+        "evidence_keywords": [
+          "attendance",
+          "training",
+          "record",
+          "certificate"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-14",
+      "clause": "Stock brokers shall report any cyber security incident to the Exchange and SEBI within six hours of noticing the incident.",
+      "expected": {
+        "frequency": "one-time",
+        "deadline_rule": null,
+        "requirement_keywords": [
+          [
+            "incident"
+          ],
+          [
+            "report"
+          ]
+        ],
+        "evidence_keywords": [
+          "report",
+          "incident",
+          "acknowledg"
+        ]
+      },
+      "hard": true
+    },
+    {
+      "id": "ext-15",
+      "clause": "Every stock broker shall file a monthly report of client complaints received and resolved with the Exchange within 7 days of month end.",
+      "expected": {
+        "frequency": "monthly",
+        "deadline_rule": "monthly",
+        "requirement_keywords": [
+          [
+            "complaint"
+          ],
+          [
+            "report"
+          ]
+        ],
+        "evidence_keywords": [
+          "report",
+          "statement",
+          "complaint"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-16",
+      "clause": "Stock brokers shall obtain a fresh KYC verification of all active clients on or before 2027-03-31.",
+      "expected": {
+        "frequency": "one-time",
+        "deadline_rule": "2027-03-31",
+        "requirement_keywords": [
+          [
+            "kyc"
+          ],
+          [
+            "client"
+          ]
+        ],
+        "evidence_keywords": [
+          "kyc",
+          "verification",
+          "log",
+          "report"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-17",
+      "clause": "Stock brokers shall carry out a half-yearly system audit of their trading software and submit the audit report to the Exchange.",
+      "expected": {
+        "frequency": [
+          "annual",
+          "quarterly"
+        ],
+        "deadline_rule": null,
+        "requirement_keywords": [
+          [
+            "system audit",
+            "audit"
+          ],
+          [
+            "software",
+            "system"
+          ]
+        ],
+        "evidence_keywords": [
+          "audit report",
+          "report"
+        ]
+      },
+      "hard": true
+    },
+    {
+      "id": "ext-18",
+      "clause": "Every stock broker shall maintain a business continuity plan and test it once every year.",
+      "expected": {
+        "frequency": "annual",
+        "deadline_rule": "annual",
+        "requirement_keywords": [
+          [
+            "continuity"
+          ],
+          [
+            "test"
+          ]
+        ],
+        "evidence_keywords": [
+          "test",
+          "report",
+          "plan"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-19",
+      "clause": "Stock brokers shall disclose all material changes in ownership to the Exchange.",
+      "expected": {
+        "frequency": "one-time",
+        "deadline_rule": null,
+        "requirement_keywords": [
+          [
+            "ownership",
+            "change"
+          ],
+          [
+            "disclose",
+            "intimate",
+            "inform"
+          ]
+        ],
+        "evidence_keywords": [
+          "disclosure",
+          "letter",
+          "intimation"
+        ]
+      },
+      "hard": true
+    },
+    {
+      "id": "ext-20",
+      "clause": "The stock broker shall pay the annual registration renewal fee to the Exchange by 2026-11-15.",
+      "expected": {
+        "frequency": "one-time",
+        "deadline_rule": "2026-11-15",
+        "requirement_keywords": [
+          [
+            "fee",
+            "renewal"
+          ]
+        ],
+        "evidence_keywords": [
+          "receipt",
+          "payment",
+          "challan",
+          "proof"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-21",
+      "clause": "Stock brokers shall reconcile client bank accounts with the books of account every month and retain the reconciliation for inspection.",
+      "expected": {
+        "frequency": "monthly",
+        "deadline_rule": "monthly",
+        "requirement_keywords": [
+          [
+            "reconcil"
+          ],
+          [
+            "bank"
+          ]
+        ],
+        "evidence_keywords": [
+          "reconciliation",
+          "statement",
+          "record"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-22",
+      "clause": "Stock brokers shall submit an annual compliance certificate signed by the Compliance Officer confirming adherence to all Exchange circulars.",
+      "expected": {
+        "frequency": "annual",
+        "deadline_rule": "annual",
+        "requirement_keywords": [
+          [
+            "certificate",
+            "compliance"
+          ],
+          [
+            "compliance officer",
+            "adherence"
+          ]
+        ],
+        "evidence_keywords": [
+          "certificate"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-23",
+      "clause": "Stock brokers shall review and update their risk management policy every quarter and place it before the board.",
+      "expected": {
+        "frequency": "quarterly",
+        "deadline_rule": "quarterly",
+        "requirement_keywords": [
+          [
+            "risk management policy",
+            "policy"
+          ],
+          [
+            "review",
+            "update"
+          ]
+        ],
+        "evidence_keywords": [
+          "board",
+          "minutes",
+          "policy"
+        ]
+      },
+      "hard": false
+    },
+    {
+      "id": "ext-24",
+      "clause": "Stock brokers are encouraged to adopt industry best practices on investor education.",
+      "expected": {
+        "frequency": "one-time",
+        "deadline_rule": null,
+        "requirement_keywords": [
+          [
+            "investor education",
+            "best practice"
+          ]
+        ],
+        "evidence_keywords": [
+          "record",
+          "material",
+          "report",
+          "none",
+          "evidence"
+        ]
+      },
+      "hard": true
+    }
+  ]
+}

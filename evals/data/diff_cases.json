@@ -1,0 +1,185 @@
+{
+  "description": "Synthetic prior-clause / new-clause pairs with the expected diff status.",
+  "cases": [
+    {
+      "id": "diff-01",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall appoint a Compliance Officer."
+        }
+      ],
+      "clause": "Stock brokers shall implement two-factor authentication for all client logins by 2026-09-30.",
+      "expected_status": "new"
+    },
+    {
+      "id": "diff-02",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall submit a monthly reconciliation statement to the Exchange."
+        }
+      ],
+      "clause": "Every stock broker shall conduct an annual cyber security audit through a CERT-In empanelled auditor.",
+      "expected_status": "new"
+    },
+    {
+      "id": "diff-03",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Brokers shall maintain client order records for five years."
+        },
+        {
+          "obligation_id": "o2",
+          "text": "Brokers shall display grievance contact details on their website."
+        }
+      ],
+      "clause": "Stock brokers shall report any cyber incident to the Exchange within six hours.",
+      "expected_status": "new"
+    },
+    {
+      "id": "diff-04",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall pay the annual registration fee by 30 November."
+        }
+      ],
+      "clause": "Stock brokers shall run a quarterly investor awareness programme for retail clients.",
+      "expected_status": "new"
+    },
+    {
+      "id": "diff-05",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall submit a monthly reconciliation statement to the Exchange by the 7th of the following month."
+        }
+      ],
+      "clause": "Stock brokers shall submit a monthly reconciliation statement to the Exchange by the 7th of the following month.",
+      "expected_status": "unchanged"
+    },
+    {
+      "id": "diff-06",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Every stock broker shall appoint a Compliance Officer and intimate the Exchange."
+        }
+      ],
+      "clause": "Every stock broker must appoint a Compliance Officer and intimate the Exchange of the appointment.",
+      "expected_status": "unchanged"
+    },
+    {
+      "id": "diff-07",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Brokers shall retain trade confirmations and order records for a minimum of five years."
+        }
+      ],
+      "clause": "Brokers shall retain records of trade confirmations and orders for at least five years.",
+      "expected_status": "unchanged"
+    },
+    {
+      "id": "diff-08",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall obtain an annual net worth certificate from a chartered accountant."
+        }
+      ],
+      "clause": "Stock brokers shall obtain a net worth certificate from a chartered accountant every year.",
+      "expected_status": "unchanged"
+    },
+    {
+      "id": "diff-09",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall submit the reconciliation statement to the Exchange quarterly."
+        }
+      ],
+      "clause": "Stock brokers shall submit the reconciliation statement to the Exchange monthly.",
+      "expected_status": "amended"
+    },
+    {
+      "id": "diff-10",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall report cyber incidents to the Exchange within 24 hours."
+        }
+      ],
+      "clause": "Stock brokers shall report cyber incidents to the Exchange within six hours.",
+      "expected_status": "amended"
+    },
+    {
+      "id": "diff-11",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall retain order records for three years."
+        }
+      ],
+      "clause": "Stock brokers shall retain order records for five years.",
+      "expected_status": "amended"
+    },
+    {
+      "id": "diff-12",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Brokers with more than 10,000 active clients shall conduct an annual system audit."
+        }
+      ],
+      "clause": "All brokers, irrespective of client count, shall conduct an annual system audit.",
+      "expected_status": "amended"
+    },
+    {
+      "id": "diff-13",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall file the annual compliance certificate by 30 June."
+        }
+      ],
+      "clause": "Stock brokers shall file the annual compliance certificate by 31 May.",
+      "expected_status": "amended"
+    },
+    {
+      "id": "diff-14",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall submit a quarterly risk report to the Exchange."
+        }
+      ],
+      "clause": "In supersession of the earlier requirement for quarterly risk reports, stock brokers shall submit a monthly risk dashboard to the Exchange.",
+      "expected_status": "superseded"
+    },
+    {
+      "id": "diff-15",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Brokers shall use the legacy client registration form CR-1."
+        }
+      ],
+      "clause": "The legacy client registration form CR-1 is withdrawn and replaced by the unified KYC form; brokers shall use only the unified KYC form.",
+      "expected_status": "superseded"
+    },
+    {
+      "id": "diff-16",
+      "prior": [
+        {
+          "obligation_id": "o1",
+          "text": "Stock brokers shall display grievance contact details on their notice board."
+        }
+      ],
+      "clause": "This clause replaces the earlier direction on notice-board display; stock brokers shall now publish grievance contact details on their website and mobile app.",
+      "expected_status": "superseded"
+    }
+  ]
+}
