@@ -10,6 +10,7 @@ from app.api.security import Principal, require_api_key, resolve_actor
 from app.db.database import get_db
 from app.db.models import ReviewQueue
 from app.graph.build_graph import build_graph
+from app.services.review_analytics import summarize_reviews
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +63,21 @@ def get_review_queue(db: Session = Depends(get_db)):
             "llm_explanation": item.llm_explanation,
             "confidence": item.confidence,
             "extracted_obligation": item.extracted_obligation,
-            "status": item.status
+            "status": item.status,
+            "source": {
+                "circular_id": item.circular_id,
+                "clause_number": item.clause_number,
+                "section": item.section,
+                "page": item.page,
+            },
         })
     return results
+
+
+@router.get("/review/analytics")
+def get_review_analytics(db: Session = Depends(get_db)):
+    """How often reviewers overrode the model, by confidence band."""
+    return summarize_reviews(db.query(ReviewQueue).all())
 
 
 class ReviewActionPayload(BaseModel):

@@ -226,3 +226,31 @@ def test_mapper_logs_a_repair_hint_and_reraises_when_qdrant_write_fails(db_sessi
             mapper_node(state)
     assert "reconcile-vectors" in caplog.text
     assert db_session.query(Obligation).count() == 1  # the row is committed; reconcile repairs the vector
+
+
+def test_human_review_node_records_where_the_clause_came_from(db_session):
+    from app.db.models import ReviewQueue
+
+    with patch("app.graph.nodes.interrupt", return_value={"decision": "approve", "actor": "a"}):
+        human_review_node({
+            "circular_id": "circ", "clause_id": "clause-4", "raw_clause": "x",
+            "extracted_obligation": {"requirement": "r"}, "diff_status": "amended",
+            "similarity_match": None, "clause_uuid": "cu-1", "clause_num": "4.2",
+            "section": "Risk Management", "page": 7,
+        })
+    item = db_session.get(ReviewQueue, "circ:clause-4")
+    assert (item.clause_uuid, item.clause_number, item.section, item.page) == ("cu-1", "4.2", "Risk Management", 7)
+
+
+def test_generate_text_diff_escapes_html_from_the_pdf():
+    from app.graph.nodes import generate_text_diff
+
+    hostile = 'pay <img src=x onerror=alert(1)> now & <script>steal()</script>'
+    for old in ("", "pay now"):
+        out = generate_text_diff(old, hostile)
+        assert "<img" not in out and "<script" not in out
+        assert "&lt;img" in out and "&amp;" in out
+
+    # the diff's own markup is still produced
+    out = generate_text_diff("pay now", "pay later")
+    assert "<del" in out and "<ins" in out

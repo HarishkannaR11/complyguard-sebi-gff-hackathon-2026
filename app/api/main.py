@@ -43,6 +43,7 @@ from app.graph.nodes import _write_audit_entry, resolve_due_date
 from app.embeddings.embedder import embed_texts
 from app.services.audit import verify_chain
 from app.services.reconcile import reconcile_vectors
+from app.services.sources import obligation_source
 from app.services.upload_jobs import create_job, fail_interrupted_jobs, job_to_dict, run_job
 from app.services.upload_pipeline import parse_circular, process_chunks
 from app.services.workflow_state import WorkflowState, get_state, advance
@@ -363,15 +364,17 @@ def list_obligations(db: Session = Depends(get_db)):
         Obligation.source_type == SOURCE_REGULATORY,
     ).all():
         task = db.query(Task).filter(Task.obligation_id == ob.id).first()
-        source = find_by_obligation_id(client, ob.id)
+        vector_payload = find_by_obligation_id(client, ob.id)
+        source = obligation_source(db, ob, vector_payload)
         obligations.append({
             "id": ob.id,
-            "circular_name": (source or {}).get("circular_id"),
+            "circular_name": source["circular_id"],
             "obligation_text": ob.requirement,
             "intermediary": ob.intermediary,
             "deadline": task.due_date.date().isoformat() if task and task.due_date else None,
             "evidence_type": ob.evidence_type,
-            "source_chunk": (source or {}).get("text"),
+            "source_chunk": source["text"],
+            "source": source,
             "status": task.status if task else "pending",
             "source_type": ob.source_type or SOURCE_REGULATORY,
         })

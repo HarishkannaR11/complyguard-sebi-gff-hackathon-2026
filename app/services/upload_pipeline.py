@@ -51,6 +51,7 @@ def _prepopulate_lineage(db: Session, circular_id: str, chunks: list[dict]) -> d
             id=clause_uuid,
             clause_number=chunk.get("clause") or f"{idx}",
             text=chunk["text"],
+            page=chunk.get("page"),
             section_id=section_map[section_title],
         ))
         clause_uuid_map[idx] = clause_uuid

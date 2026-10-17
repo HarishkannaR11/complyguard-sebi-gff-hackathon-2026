@@ -30,6 +30,7 @@ class Clause(Base):
     id = Column(String, primary_key=True)
     clause_number = Column(String)
     text = Column(Text)
+    page = Column(Integer, nullable=True)
     section_id = Column(String, ForeignKey("sections.id"))
 
     section = relationship("Section")
@@ -145,6 +146,11 @@ class ReviewQueue(Base):
     confidence = Column(Float, nullable=True)
     extracted_obligation = Column(JSON, nullable=True)
     status = Column(String, default="pending")
+    # Where in the source circular the clause came from, so a reviewer can verify it
+    clause_uuid = Column(String, nullable=True)
+    clause_number = Column(String, nullable=True)
+    section = Column(String, nullable=True)
+    page = Column(Integer, nullable=True)
 
 
 class CompanyObligation(Base):

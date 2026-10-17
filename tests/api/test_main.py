@@ -461,3 +461,85 @@ def test_reconcile_endpoint_delegates_to_the_service():
         app.dependency_overrides.clear()
     assert response.json() == {"repaired": ["o1"]}
     assert mock_reconcile.call_args.kwargs == {"fix": False}
+
+
+# ── source linking + reviewer analytics ──────────────────────────────────────
+
+def test_obligations_expose_page_clause_and_section_from_postgres():
+    from app.db.models import Clause, Section, Circular
+
+    factory, override = _factory_and_override()
+    db = factory()
+    db.add(Circular(id="circ"))
+    db.add(Section(id="s1", title="Risk Management", circular_id="circ"))
+    db.add(Clause(id="cl1", clause_number="4.2", text="Brokers shall X.", page=7, section_id="s1"))
+    db.add(Obligation(id="o1", clause_id="clause-0", requirement="Do X", frequency="annual",
+                      evidence_type="policy", status="active", source_type="regulatory",
+                      clause_uuid="cl1", origin_circular_id="circ"))
+    db.commit()
+    db.close()
+
+    app.dependency_overrides[get_db] = override
+    try:
+        with patch("app.api.main.get_client"), patch("app.api.main.find_by_obligation_id", return_value=None):
+            body = client.get("/obligations").json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert body[0]["source"] == {
+        "circular_id": "circ", "section": "Risk Management", "clause_number": "4.2",
+        "page": 7, "text": "Brokers shall X."}
+    assert body[0]["source_chunk"] == "Brokers shall X."
+    assert body[0]["circular_name"] == "circ"
+
+
+def test_pipeline_stores_the_pdf_page_on_each_clause():
+    from app.db.models import Clause
+
+    factory, override = _factory_and_override()
+    app.dependency_overrides[get_db] = override
+    fake_graph = MagicMock()
+    fake_graph.invoke.return_value = {"diff_status": "unchanged"}
+    try:
+        with (
+            patch("app.api.main.parse_circular",
+                  return_value=[{**_chunk("1. A.", clause="1"), "page": 3}]),
+            patch("app.services.upload_pipeline.build_graph", return_value=fake_graph),
+            patch("app.services.upload_pipeline.mark_superseded_obligations", return_value=[]),
+        ):
+            client.post("/upload?wait=true",
+                        files={"file": ("pages.pdf", b"%PDF-1.4", "application/pdf")})
+        db = factory()
+        assert [c.page for c in db.query(Clause)] == [3]
+    finally:
+        app.dependency_overrides.clear()
+        _cleanup_uploaded("pages.pdf")
+
+
+def test_review_queue_and_analytics_endpoints():
+    from app.db.models import ReviewQueue
+
+    factory, override = _factory_and_override()
+    db = factory()
+    db.add_all([
+        ReviewQueue(id="c:1", circular_id="c", clause_id="clause-1", new_clause="n", status="pending",
+                    confidence=0.4, clause_number="4.2", section="Risk", page=7),
+        ReviewQueue(id="c:2", circular_id="c", clause_id="clause-2", new_clause="n", status="rejected",
+                    confidence=0.9),
+        ReviewQueue(id="c:3", circular_id="c", clause_id="clause-3", new_clause="n", status="approved",
+                    confidence=0.9),
+    ])
+    db.commit()
+    db.close()
+
+    app.dependency_overrides[get_db] = override
+    try:
+        queue = client.get("/review/queue").json()
+        analytics = client.get("/review/analytics").json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert queue[0]["source"] == {"circular_id": "c", "clause_number": "4.2", "section": "Risk", "page": 7}
+    assert analytics["pending"] == 1
+    high = next(b for b in analytics["by_confidence_band"] if b["band"].startswith("high"))
+    assert high["reviewed"] == 2 and high["override_rate"] == 0.5

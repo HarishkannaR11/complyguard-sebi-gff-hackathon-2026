@@ -71,6 +71,7 @@ export default function App() {
         deadline: o.deadline,
         evidenceType: o.evidence_type,
         sourceChunk: o.source_chunk,
+        source: o.source,
         status: o.status,
         sourceType: o.source_type,
       })));

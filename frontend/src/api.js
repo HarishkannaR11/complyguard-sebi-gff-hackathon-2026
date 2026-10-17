@@ -174,6 +174,12 @@ export const getReviewQueue = async () => {
     return response.json();
 };
 
+export const getReviewAnalytics = async () => {
+    const response = await apiFetch('/review/analytics');
+    if (!response.ok) throw new Error('Failed to fetch review analytics');
+    return response.json();
+};
+
 /**
  * @param {string} threadId - Unique thread identifier (e.g. "circular_id:clause_id")
  * @param {string} action - Action type ("approve", "reject", "edit")

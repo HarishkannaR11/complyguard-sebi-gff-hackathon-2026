@@ -1,5 +1,6 @@
 """LangGraph pipeline nodes for the RegOps AI compliance-obligation pipeline."""
 import hashlib
+import html
 import json
 import logging
 import uuid
@@ -527,26 +528,35 @@ import difflib
 
 
 def generate_text_diff(old_text: str, new_text: str) -> str:
+    """Word-level diff as HTML. The result is rendered with innerHTML by the review UI and
+    the words come from an uploaded PDF, so every word is HTML-escaped; only the <del>/<ins>
+    wrappers added here are markup."""
     if not old_text:
-        return new_text
-    
-    old_words = old_text.split()
-    new_words = new_text.split()
-    
+        return html.escape(new_text)
+
+    old_words = [html.escape(w) for w in old_text.split()]
+    new_words = [html.escape(w) for w in new_text.split()]
+
     matcher = difflib.SequenceMatcher(None, old_words, new_words)
     diff_html = []
-    
+
+    def deleted(words):
+        return f"<del class='bg-red-100 text-red-700 line-through px-1 rounded'>{' '.join(words)}</del>"
+
+    def inserted(words):
+        return f"<ins class='bg-green-100 text-green-700 font-semibold px-1 rounded'>{' '.join(words)}</ins>"
+
     for opcode, a_start, a_end, b_start, b_end in matcher.get_opcodes():
         if opcode == 'equal':
             diff_html.append(" ".join(old_words[a_start:a_end]))
         elif opcode == 'replace':
-            diff_html.append(f"<del class='bg-red-100 text-red-700 line-through px-1 rounded'>{' '.join(old_words[a_start:a_end])}</del>")
-            diff_html.append(f"<ins class='bg-green-100 text-green-700 font-semibold px-1 rounded'>{' '.join(new_words[b_start:b_end])}</ins>")
+            diff_html.append(deleted(old_words[a_start:a_end]))
+            diff_html.append(inserted(new_words[b_start:b_end]))
         elif opcode == 'delete':
-            diff_html.append(f"<del class='bg-red-100 text-red-700 line-through px-1 rounded'>{' '.join(old_words[a_start:a_end])}</del>")
+            diff_html.append(deleted(old_words[a_start:a_end]))
         elif opcode == 'insert':
-            diff_html.append(f"<ins class='bg-green-100 text-green-700 font-semibold px-1 rounded'>{' '.join(new_words[b_start:b_end])}</ins>")
-            
+            diff_html.append(inserted(new_words[b_start:b_end]))
+
     return " ".join(diff_html)
 
 
@@ -584,7 +594,11 @@ def human_review_node(state: ComplianceState) -> dict:
                 llm_explanation=explanation,
                 confidence=confidence,
                 extracted_obligation=state.get("extracted_obligation"),
-                status="pending"
+                status="pending",
+                clause_uuid=state.get("clause_uuid"),
+                clause_number=state.get("clause_num"),
+                section=state.get("section"),
+                page=state.get("page"),
             )
             db.add(review_item)
             db.commit()
