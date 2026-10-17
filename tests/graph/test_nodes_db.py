@@ -208,3 +208,21 @@ def test_finalize_node_writes_hash_chained_audit_entry(db_session):
     assert entries[0].prev_hash == ""
     assert entries[1].prev_hash == entries[0].hash
     assert entries[0].actor == "system"
+
+
+def test_mapper_logs_a_repair_hint_and_reraises_when_qdrant_write_fails(db_session, caplog):
+    import logging
+
+    state = {
+        "circular_id": "c1", "clause_id": "clause-0", "raw_clause": "1. Do X.",
+        "embedding": [0.1, 0.2], "diff_status": "new", "similarity_match": None,
+        "extracted_obligation": {"requirement": "Do X", "frequency": "annual",
+                                 "evidence_type": "policy", "deadline_rule": "annual"},
+    }
+    with patch("app.graph.nodes.get_client", return_value="fake-client"), \
+         patch("app.graph.nodes.upsert_chunks", side_effect=RuntimeError("qdrant down")), \
+         caplog.at_level(logging.ERROR, logger="app.graph.nodes"):
+        with pytest.raises(RuntimeError, match="qdrant down"):
+            mapper_node(state)
+    assert "reconcile-vectors" in caplog.text
+    assert db_session.query(Obligation).count() == 1  # the row is committed; reconcile repairs the vector

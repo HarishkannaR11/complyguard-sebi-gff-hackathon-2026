@@ -428,17 +428,26 @@ def mapper_node(state: ComplianceState) -> dict:
     finally:
         db.close()
 
-    client = get_client()
-    upsert_chunks(
-        client,
-        chunks=[state["raw_clause"]],
-        vectors=[state["embedding"]],
-        metadatas=[{
-            "circular_id": state["circular_id"],
-            "clause_id": state["clause_id"],
-            "obligation_id": obligation_id,
-        }],
-    )
+    try:
+        client = get_client()
+        upsert_chunks(
+            client,
+            chunks=[state["raw_clause"]],
+            vectors=[state["embedding"]],
+            metadatas=[{
+                "circular_id": state["circular_id"],
+                "clause_id": state["clause_id"],
+                "obligation_id": obligation_id,
+            }],
+        )
+    except Exception:
+        # Postgres and Qdrant can't share a transaction: the obligation is already
+        # committed, so say how to repair the missing vector.
+        logger.exception(
+            "Obligation %s was saved but its vector was not written to Qdrant; "
+            "run POST /admin/reconcile-vectors to repair it", obligation_id,
+        )
+        raise
 
     return {
         "task": {

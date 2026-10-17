@@ -447,3 +447,17 @@ def test_cors_allows_configured_origin_only():
     bad = client.options("/readiness", headers={
         "Origin": "http://evil.example", "Access-Control-Request-Method": "GET"})
     assert "access-control-allow-origin" not in bad.headers
+
+
+def test_reconcile_endpoint_delegates_to_the_service():
+    app.dependency_overrides[get_db] = _override_get_db_with_sqlite()
+    try:
+        with (
+            patch("app.api.main.get_client", return_value="client"),
+            patch("app.api.main.reconcile_vectors", return_value={"repaired": ["o1"]}) as mock_reconcile,
+        ):
+            response = client.post("/admin/reconcile-vectors?fix=false")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.json() == {"repaired": ["o1"]}
+    assert mock_reconcile.call_args.kwargs == {"fix": False}

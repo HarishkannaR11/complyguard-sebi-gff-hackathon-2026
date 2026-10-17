@@ -40,7 +40,9 @@ from app.services.gap_engine import (
     has_company_obligations, run_gap_analysis,
 )
 from app.graph.nodes import _write_audit_entry, resolve_due_date
+from app.embeddings.embedder import embed_texts
 from app.services.audit import verify_chain
+from app.services.reconcile import reconcile_vectors
 from app.services.upload_jobs import create_job, fail_interrupted_jobs, job_to_dict, run_job
 from app.services.upload_pipeline import parse_circular, process_chunks
 from app.services.workflow_state import WorkflowState, get_state, advance
@@ -480,6 +482,12 @@ def list_audit_log(db: Session = Depends(get_db)):
 def verify_audit_log(db: Session = Depends(get_db)):
     """Re-compute the whole hash chain and report the first tampered/missing entry."""
     return verify_chain(db)
+
+
+@app.post("/admin/reconcile-vectors")
+def reconcile_vector_store(fix: bool = True, db: Session = Depends(get_db)):
+    """Find obligations missing from Qdrant (and vectors with no obligation); repair if fix=true."""
+    return reconcile_vectors(db, get_client(), embed_texts, fix=fix)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
