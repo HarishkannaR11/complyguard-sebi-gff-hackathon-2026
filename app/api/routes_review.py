@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from langgraph.types import Command
 
+from app.api.security import Principal, require_api_key, resolve_actor
 from app.db.database import get_db
 from app.db.models import ReviewQueue
 from app.graph.build_graph import build_graph
@@ -21,7 +22,7 @@ def _get_graph():
     return _graph
 
 
-def async_resume_graph(thread_id: str, action: str, obligation_data: dict = None):
+def async_resume_graph(thread_id: str, action: str, obligation_data: dict = None, actor: str = "reviewer"):
     try:
         graph = build_graph()
         config = {"configurable": {"thread_id": thread_id}}
@@ -36,7 +37,7 @@ def async_resume_graph(thread_id: str, action: str, obligation_data: dict = None
             decision = "approve"
             
         graph.invoke(
-            Command(resume={"decision": decision, "actor": "reviewer"}),
+            Command(resume={"decision": decision, "actor": actor}),
             config=config,
         )
     except Exception as e:
@@ -73,7 +74,8 @@ def submit_review_action(
     thread_id: str,
     payload: ReviewActionPayload,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_api_key),
 ):
     graph = _get_graph()
     config = {"configurable": {"thread_id": thread_id}}
@@ -94,7 +96,10 @@ def submit_review_action(
 
     if is_paused:
         # Run graph invoke in background task
-        background_tasks.add_task(async_resume_graph, thread_id, payload.action, payload.obligation_data)
+        background_tasks.add_task(
+            async_resume_graph, thread_id, payload.action, payload.obligation_data,
+            resolve_actor(principal, None),
+        )
         return {"status": "resumed_async"}
 
     if item:
@@ -111,8 +116,11 @@ def submit_decision(
     thread_id: str,
     decision: str,
     actor: str = "reviewer",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_api_key),
 ):
+    # With auth on, the audit actor is the authenticated user, not a client-supplied name.
+    actor = resolve_actor(principal, actor)
     graph = _get_graph()
     config = {"configurable": {"thread_id": thread_id}}
 

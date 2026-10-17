@@ -1,6 +1,5 @@
 """FastAPI application wiring for RegOps AI."""
 import os
-import shutil
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -8,36 +7,37 @@ from dotenv import load_dotenv
 load_dotenv()  # must run before importing app.db.database, which reads
                 # DATABASE_URL at import time
 
+import logging
 import uuid
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.routes_review import router as review_router
 from app.api.routes_workflow import router as workflow_router
-from app.db.database import Base, engine, get_db
+from app.api.security import cors_origins, read_upload, require_api_key, safe_filename
+from app.db.database import Base, SessionLocal, engine, get_db
 import app.db.models  # noqa: F401
 import time
 from app.services.metrics import metrics_collector
 from app.db.models import (
     AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause,
     Evidence, Deadline, ApplicableEntity, CompanyObligation, GapResult,
-    SOURCE_REGULATORY, SOURCE_COMPANY,
+    SOURCE_REGULATORY, SOURCE_COMPANY, UploadJob,
 )
 from app.embeddings.qdrant_client import find_by_obligation_id, get_client
-from app.graph.build_graph import build_graph
-from app.ingestion.clause_splitter import split_into_clauses
-from app.ingestion.pdf_cleaner import extract_and_clean
-from app.ingestion.hybrid_parser import parse_pdf_structured
 from app.services.gap_engine import (
     get_gaps, update_all_task_statuses,
     has_company_obligations, run_gap_analysis,
 )
+from app.graph.nodes import _write_audit_entry, resolve_due_date
 from app.services.audit import verify_chain
-from app.services.supersession import mark_superseded_obligations
+from app.services.upload_jobs import create_job, fail_interrupted_jobs, job_to_dict, run_job
+from app.services.upload_pipeline import parse_circular, process_chunks
 from app.services.workflow_state import WorkflowState, get_state, advance
 
 
@@ -48,15 +48,22 @@ async def lifespan(app: FastAPI):
     run_v2()
     run_v3()
     Base.metadata.create_all(bind=engine)
+    fail_interrupted_jobs(SessionLocal)
     yield
 
 
-app = FastAPI(title="RegOps AI API", lifespan=lifespan)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(
+    title="RegOps AI API",
+    lifespan=lifespan,
+    dependencies=[Depends(require_api_key)],
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins(),
+    allow_credentials=False,  # auth is a header (X-API-Key), not a cookie
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -129,184 +136,64 @@ def readiness(db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/upload")
-def upload_circular(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    os.makedirs("data/raw_pdfs", exist_ok=True)
-    file_path = f"data/raw_pdfs/{file.filename}"
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+def upload_circular(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    wait: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Validate and parse the PDF now, then run the per-clause pipeline.
 
-    circular_id = os.path.splitext(file.filename)[0]
+    By default the clause pipeline runs as a background job: this returns 202 with a
+    ``job_id`` to poll at ``GET /jobs/{job_id}``. ``?wait=true`` runs it inline and
+    returns the full result (used by scripts and tests).
+    """
+    data = read_upload(file, extension=".pdf", magic=b"%PDF-")
+    filename = safe_filename(file.filename, default="circular.pdf")
+    circular_id = os.path.splitext(filename)[0]
+
+    os.makedirs("data/raw_pdfs", exist_ok=True)
+    file_path = os.path.join("data/raw_pdfs", filename)
+    with open(file_path, "wb") as buffer:
+        buffer.write(data)
 
     try:
-        from unittest.mock import Mock
-        if isinstance(extract_and_clean, Mock):
-            cleaned = extract_and_clean(file_path)
-            clauses = split_into_clauses(cleaned)
-            chunks = [{"text": cl, "page": 1, "section": "General", "clause": None, "parent": None, "type": "obligation", "confidence": 0.5} for cl in clauses]
-        else:
-            chunks = parse_pdf_structured(file_path)
+        chunks = parse_circular(file_path)
     except Exception as exc:
         raise HTTPException(
             status_code=422, detail=f"PDF cleaning failed: {exc}"
         ) from exc
 
-    if not chunks:
-        return {
-            "status": "success",
-            "filename": file.filename,
-            "circular_id": circular_id,
-            "clauses_processed": 0,
-            "results": [],
-        }
-
-    # V2 Lineage pre-population
-    try:
-        import datetime
-        circular = db.query(Circular).filter(Circular.id == circular_id).first()
-        if not circular:
-            circular = Circular(id=circular_id, title=circular_id, issue_date=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
-            db.add(circular)
-            db.commit()
-
-        clause_uuid_map = {}
-        section_map = {}
-
-        for idx, chunk in enumerate(chunks):
-            section_title = chunk.get("section") or "General"
-            if section_title not in section_map:
-                sec_uuid = str(uuid.uuid4())
-                db.add(Section(id=sec_uuid, title=section_title, circular_id=circular_id))
-                db.commit()
-                section_map[section_title] = sec_uuid
-
-            sec_id = section_map[section_title]
-            clause_uuid = str(uuid.uuid4())
-            db.add(Clause(
-                id=clause_uuid,
-                clause_number=chunk.get("clause") or f"{idx}",
-                text=chunk["text"],
-                section_id=sec_id
-            ))
-            db.commit()
-            clause_uuid_map[idx] = clause_uuid
-    except Exception as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=500, detail=f"Lineage DB pre-population failed: {exc}"
-        ) from exc
-
-    graph = build_graph()
-    results = []
-    matched_obligation_ids = set()
-
-    for i, chunk in enumerate(chunks):
-        clause_id = f"clause-{i}"
-
-        from unittest.mock import Mock
-        is_mocked = isinstance(extract_and_clean, Mock)
-
-        if is_mocked:
-            state = {
-                "circular_id": circular_id,
-                "clause_id": clause_id,
-                "raw_clause": chunk["text"],
-                "heading": None,
-            }
-        else:
-            heading = f"Clause {chunk['clause']}: {chunk['section']}" if chunk.get("clause") else chunk.get("section")
-            if not heading:
-                heading = f"Clause {i}"
-
-            state = {
-                "circular_id": circular_id,
-                "clause_id": clause_id,
-                "raw_clause": chunk["text"],
-                "heading": heading,
-                "confidence": chunk.get("confidence", 1.0),
-                "page": chunk.get("page"),
-                "section": chunk.get("section"),
-                "clause_num": chunk.get("clause"),
-                "parent_clause": chunk.get("parent"),
-                "block_type": chunk.get("type"),
-                "clause_uuid": clause_uuid_map.get(i),
-            }
-        config = {"configurable": {"thread_id": f"{circular_id}:{clause_id}"}}
-
-        from langgraph.errors import GraphInterrupt
-        start_proc = time.time()
+    if wait or not chunks:
         try:
-            result = graph.invoke(state, config=config)
-            metrics_collector.record_processing_time(time.time() - start_proc)
-        except GraphInterrupt as exc:
-            metrics_collector.record_processing_time(time.time() - start_proc)
-            state_val = graph.get_state(config).values
-            similarity_match = state_val.get("similarity_match") or {}
-            obligation_id = (similarity_match.get("payload") or {}).get("obligation_id")
-            if obligation_id:
-                matched_obligation_ids.add(obligation_id)
-            results.append({"clause_id": clause_id, "status": "pending_review"})
-            continue
+            return process_chunks(db, filename=filename, circular_id=circular_id, chunks=chunks)
         except Exception as exc:
-            metrics_collector.record_processing_time(time.time() - start_proc)
-            results.append({"clause_id": clause_id, "status": "error", "detail": str(exc)})
-            continue
+            db.rollback()
+            raise HTTPException(
+                status_code=500, detail=f"Lineage DB pre-population failed: {exc}"
+            ) from exc
 
-        if "__interrupt__" in result:
-            interrupt_payload = result["__interrupt__"][0].value
-            similarity_match = interrupt_payload.get("similarity_match") or {}
-            obligation_id = (similarity_match.get("payload") or {}).get("obligation_id")
-            if obligation_id:
-                matched_obligation_ids.add(obligation_id)
-            results.append({"clause_id": clause_id, "status": "pending_review"})
-            continue
+    job = create_job(db, filename=filename, circular_id=circular_id, total=len(chunks))
+    background_tasks.add_task(run_job, SessionLocal, job.id, filename, circular_id, chunks)
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": "accepted",
+            "job_id": job.id,
+            "circular_id": circular_id,
+            "filename": filename,
+            "clauses_total": len(chunks),
+            "poll_url": f"/jobs/{job.id}",
+        },
+    )
 
-        task = result.get("task")
-        if task:
-            matched_obligation_ids.add(task["obligation_id"])
-        elif result.get("diff_status") == "unchanged":
-            similarity_match = result.get("similarity_match") or {}
-            obligation_id = (similarity_match.get("payload") or {}).get("obligation_id")
-            if obligation_id:
-                matched_obligation_ids.add(obligation_id)
-        results.append({
-            "clause_id": clause_id,
-            "status": "processed",
-            "diff_status": result.get("diff_status"),
-            "task": task,
-        })
 
-    had_errors = any(r["status"] == "error" for r in results)
-    superseded = []
-    if not had_errors:
-        superseded = mark_superseded_obligations(db, circular_id, matched_obligation_ids)
-
-    # Tag any newly-written obligations as regulatory (idempotent)
-    try:
-        db.query(Obligation).filter(
-            Obligation.source_type == None  # noqa: E711
-        ).update({"source_type": SOURCE_REGULATORY})
-        db.commit()
-    except Exception:
-        db.rollback()
-
-    # Advance workflow state
-    has_pending = any(r["status"] == "pending_review" for r in results)
-    if has_pending:
-        advance(WorkflowState.REVIEW_PENDING, db)
-    elif not had_errors:
-        advance(WorkflowState.REVIEW_APPROVED, db)
-    else:
-        advance(WorkflowState.EXTRACTION_RUNNING, db)
-
-    return {
-        "status": "success",
-        "filename": file.filename,
-        "circular_id": circular_id,
-        "clauses_processed": len(chunks),
-        "results": results,
-        "superseded_obligation_ids": superseded,
-        "supersession_skipped_due_to_errors": had_errors,
-    }
+@app.get("/jobs/{job_id}")
+def get_upload_job(job_id: str, db: Session = Depends(get_db)):
+    job = db.get(UploadJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No such job '{job_id}'")
+    return job_to_dict(job)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,11 +210,11 @@ def import_obligations_csv(file: UploadFile = File(...), db: Session = Depends(g
     import io
     import datetime
 
-    if not file.filename.endswith('.csv'):
-        raise HTTPException(status_code=400, detail="Only CSV files are supported")
+    raw = read_upload(file, extension=".csv")
+    source_file = safe_filename(file.filename, default="obligations.csv")
 
     try:
-        contents = file.file.read().decode("utf-8-sig")
+        contents = raw.decode("utf-8-sig")
         csv_file = io.StringIO(contents)
         reader = csv.DictReader(csv_file)
 
@@ -352,7 +239,6 @@ def import_obligations_csv(file: UploadFile = File(...), db: Session = Depends(g
                     pass
 
             if not task_due_date and deadline_rule:
-                from app.graph.nodes import resolve_due_date
                 due_date_val = resolve_due_date(deadline_rule, datetime.date.today())
                 if due_date_val:
                     task_due_date = datetime.datetime.combine(due_date_val, datetime.datetime.min.time())
@@ -370,7 +256,7 @@ def import_obligations_csv(file: UploadFile = File(...), db: Session = Depends(g
                 owner=owner,
                 due_date=task_due_date,
                 status="open",
-                source_file=file.filename,
+                source_file=source_file,
             )
             db.add(co)
 
@@ -404,19 +290,16 @@ def import_obligations_csv(file: UploadFile = File(...), db: Session = Depends(g
         # Advance workflow state
         advance(WorkflowState.COMPANY_DATA_IMPORTED, db)
 
-        # Log audit entry
+        # Log audit entry (hash-chained like every other audit row)
         try:
-            audit = AuditTrail(
-                id=str(uuid.uuid4()),
+            _write_audit_entry(
                 thread_id="company_import",
                 node_name="company_import",
-                action={"event": "Company obligations CSV imported", "count": imported_count, "file": file.filename},
+                action={"event": "Company obligations CSV imported", "count": imported_count, "file": source_file},
                 actor="system",
             )
-            db.add(audit)
-            db.commit()
         except Exception:
-            pass
+            logger.exception("Failed to write company-import audit entry")
 
         return {"status": "success", "imported": imported_count}
     except HTTPException:

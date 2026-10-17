@@ -5,7 +5,7 @@ import re
 import secrets
 from dataclasses import dataclass
 
-from fastapi import Header, HTTPException, UploadFile
+from fastapi import Header, HTTPException, Request, UploadFile
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +37,14 @@ def auth_enabled() -> bool:
     return bool(_load_api_keys())
 
 
-def require_api_key(x_api_key: str | None = Header(default=None)) -> Principal:
+# Reachable without a key: load-balancer health probes and the interactive API docs.
+PUBLIC_PATHS = frozenset({"/health", "/docs", "/redoc", "/openapi.json"})
+
+
+def require_api_key(request: Request, x_api_key: str | None = Header(default=None)) -> Principal:
     """FastAPI dependency. With API_KEYS unset, auth is off (local development)."""
     keys = _load_api_keys()
-    if not keys:
+    if not keys or request.url.path in PUBLIC_PATHS:
         return Principal(ANONYMOUS, authenticated=False)
     if x_api_key:
         for key, name in keys.items():

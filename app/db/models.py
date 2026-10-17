@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Float
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Float, Integer
 from sqlalchemy.orm import relationship
 import datetime
 
@@ -180,4 +180,19 @@ class WorkflowStateRecord(Base):
     __tablename__ = "workflow_state"
     id = Column(String, primary_key=True, default="current")
     state = Column(String, default="IDLE")
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class UploadJob(Base):
+    """Background run of the per-clause pipeline for one uploaded circular."""
+    __tablename__ = "upload_jobs"
+    id = Column(String, primary_key=True)
+    filename = Column(String)
+    circular_id = Column(String)
+    # queued | running | completed | failed
+    status = Column(String, default="queued")
+    total_clauses = Column(Integer, default=0)
+    processed_clauses = Column(Integer, default=0)
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)

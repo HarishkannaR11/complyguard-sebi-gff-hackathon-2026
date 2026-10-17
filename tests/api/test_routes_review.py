@@ -168,3 +168,29 @@ def test_submit_review_action_async():
     assert response.json() == {"status": "resumed_async"}
     assert mock_db.commit.called
     routes_review_module._graph = None
+
+
+def test_decision_actor_is_the_authenticated_user_not_the_claimed_one(monkeypatch):
+    import app.api.routes_review as routes_review_module
+
+    monkeypatch.setenv("API_KEYS", "k1:alice")
+    routes_review_module._graph = None
+    fake_graph = MagicMock()
+    fake_graph.get_state.return_value = MagicMock(next=("human_review",))
+    fake_graph.invoke.return_value = {}
+
+    try:
+        with patch("app.api.routes_review.build_graph", return_value=fake_graph):
+            app = FastAPI()
+            app.include_router(routes_review_module.router)
+            client = TestClient(app)
+            response = client.post(
+                "/review/c:1/decision",
+                params={"decision": "approve", "actor": "mallory"},
+                headers={"X-API-Key": "k1"},
+            )
+        assert response.status_code == 200
+        command_arg = fake_graph.invoke.call_args.args[0]
+        assert command_arg.resume["actor"] == "alice"
+    finally:
+        routes_review_module._graph = None
