@@ -14,3 +14,4 @@ langgraph
 langgraph-checkpoint-postgres==3.1.0
 pytest>=7.0
 httpx
+alembic

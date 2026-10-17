@@ -20,7 +20,8 @@ from sqlalchemy.orm import Session
 from app.api.routes_review import router as review_router
 from app.api.routes_workflow import router as workflow_router
 from app.api.security import cors_origins, read_upload, require_api_key, safe_filename
-from app.db.database import Base, SessionLocal, engine, get_db
+from app.db.database import SessionLocal, get_db
+from app.db.migrate import run_migrations
 import app.db.models  # noqa: F401
 import time
 from app.services.metrics import metrics_collector
@@ -43,11 +44,7 @@ from app.services.workflow_state import WorkflowState, get_state, advance
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.db.migrate_v2 import run_migrations as run_v2
-    from app.db.migrate_v3 import run_migrations as run_v3
-    run_v2()
-    run_v3()
-    Base.metadata.create_all(bind=engine)
+    run_migrations()
     fail_interrupted_jobs(SessionLocal)
     yield
 

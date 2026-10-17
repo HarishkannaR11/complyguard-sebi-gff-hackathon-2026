@@ -38,7 +38,7 @@ The database schema has been expanded to support detailed regulatory lineage tra
 
 To ensure backward compatibility and prevent manual DB overhead, schema migration is driven automatically at app initialization.
 
-- **Migration Script**: [migrate_v2.py](file:///home/krisharish/Documents/complyguard-sebi-gff-hackathon-2026/app/db/migrate_v2.py)
+- **Migration Script**: superseded by Alembic (`migrations/`, run via `app.db.migrate.run_migrations`).
 - **Execution Hook**: Configured inside the FastAPI startup Lifespan handler in [main.py](file:///home/krisharish/Documents/complyguard-sebi-gff-hackathon-2026/app/api/main.py).
 - **Behavior**:
   1. Inspects the database tables. If the `obligations` table exists but lacks V2 columns, it runs SQL `ALTER TABLE` commands to inject `previous_obligation_id`, `amended_obligation_id`, `superseded_obligation_id`, `origin_circular_id`, and `clause_uuid`.
@@ -52,5 +52,5 @@ To ensure backward compatibility and prevent manual DB overhead, schema migratio
 While migrations execute automatically at startup, you can trigger a manual migration by executing:
 
 ```bash
-python -m app.db.migrate_v2
+alembic upgrade head
 ```

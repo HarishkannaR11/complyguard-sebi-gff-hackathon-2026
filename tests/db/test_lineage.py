@@ -16,7 +16,6 @@ from app.db.models import (
     Task,
     EvidenceLog
 )
-from app.db.migrate_v2 import run_migrations
 
 
 def test_migration_and_lineage_relations():
@@ -32,7 +31,6 @@ def test_migration_and_lineage_relations():
     # to existing tables. Let's create the tables via create_all first to simulate
     # an existing DB, then execute migrations, then run validation.
     Base.metadata.create_all(engine)
-    run_migrations()  # Executes ALTER columns safely on the obligations table
     
     # Initialize DB Session
     TestSessionLocal = sessionmaker(bind=engine)
