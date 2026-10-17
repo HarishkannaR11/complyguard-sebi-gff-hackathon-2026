@@ -2,6 +2,8 @@ import os
 
 # Tests never talk to a real Postgres; allow the in-memory LangGraph checkpointer.
 os.environ.setdefault("ALLOW_MEMORY_CHECKPOINTER", "1")
+# Node tests mock the Groq client but still need a key to get past the guard.
+os.environ.setdefault("GROQ_API_KEY", "test-key")
 
 import pytest
 
