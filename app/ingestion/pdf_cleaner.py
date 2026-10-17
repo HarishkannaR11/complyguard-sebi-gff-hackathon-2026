@@ -10,8 +10,11 @@ Usage:
     clean_text = extract_and_clean("data/raw_pdfs/stockbroker_mc_2025-06-17.pdf")
 """
 
+import logging
 import re
 import fitz  # PyMuPDF
+
+logger = logging.getLogger(__name__)
 
 
 def extract_pages(pdf_path: str) -> list[str]:
@@ -22,8 +25,9 @@ def extract_pages(pdf_path: str) -> list[str]:
     for i, page in enumerate(doc):
         text = page.get_text()
         if len(text.strip()) < 20:
-            print(f"[WARN] Page {i+1} returned near-empty text — "
-                  f"likely scanned/image page, needs OCR.")
+            logger.warning(
+                "Page %d returned near-empty text - likely scanned/image page, needs OCR.", i + 1
+            )
         pages.append(text)
     return pages
 

@@ -1,5 +1,6 @@
 """Human-review API routes: resume a paused compliance-pipeline run with a decision."""
 import json
+import logging
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -9,6 +10,8 @@ from app.api.security import Principal, require_api_key, resolve_actor
 from app.db.database import get_db
 from app.db.models import ReviewQueue
 from app.graph.build_graph import build_graph
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -40,8 +43,8 @@ def async_resume_graph(thread_id: str, action: str, obligation_data: dict = None
             Command(resume={"decision": decision, "actor": actor}),
             config=config,
         )
-    except Exception as e:
-        print(f"[ERROR] Asynchronous resume failed for thread {thread_id}: {e}")
+    except Exception:
+        logger.exception("Asynchronous resume failed for thread %s", thread_id)
 
 
 @router.get("/review/queue")

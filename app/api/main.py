@@ -10,6 +10,10 @@ load_dotenv()  # must run before importing app.db.database, which reads
 import logging
 import uuid
 
+from app.logging_config import configure_logging
+
+configure_logging()
+
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -30,7 +34,7 @@ from app.db.models import (
     Evidence, Deadline, ApplicableEntity, CompanyObligation, GapResult,
     SOURCE_REGULATORY, SOURCE_COMPANY, UploadJob,
 )
-from app.embeddings.qdrant_client import find_by_obligation_id, get_client
+from app.embeddings.qdrant_client import find_by_obligation_id, get_client, is_using_fallback
 from app.services.gap_engine import (
     get_gaps, update_all_task_statuses,
     has_company_obligations, run_gap_analysis,
@@ -90,7 +94,12 @@ def health_check(db: Session = Depends(get_db)):
 
     try:
         get_client().get_collections()
-        health_status["qdrant"] = "reachable"
+        if is_using_fallback():
+            # Not a hard failure (the demo works without Docker) but not the real store either.
+            health_status["status"] = "degraded"
+            health_status["qdrant"] = "fallback: local embedded store in use, Qdrant server unreachable"
+        else:
+            health_status["qdrant"] = "reachable"
     except Exception as e:
         health_status["status"] = "unhealthy"
         health_status["qdrant"] = f"error: {e}"

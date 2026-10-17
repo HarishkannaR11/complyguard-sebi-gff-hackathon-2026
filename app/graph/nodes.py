@@ -1,6 +1,7 @@
 """LangGraph pipeline nodes for the RegOps AI compliance-obligation pipeline."""
 import hashlib
 import json
+import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from datetime import datetime as dt_datetime
@@ -12,7 +13,13 @@ import re
 
 from langgraph.types import interrupt
 
+logger = logging.getLogger(__name__)
+
 _audit_lock = threading.Lock()
+
+
+def _thread_id(state) -> str:
+    return f"{state.get('circular_id')}:{state.get('clause_id')}"
 
 
 def parse_json_robust(content: str) -> dict:
@@ -51,14 +58,14 @@ FREQUENCY_DAYS = {
 
 
 def chunker_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering chunker stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "chunker", _thread_id(state))
     raw_clause = state["raw_clause"].strip()
     heading = state.get("heading") or raw_clause.splitlines()[0][:80].strip()
     return {"raw_clause": raw_clause, "heading": heading}
 
 
 def embedder_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering embedder stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "embedder", _thread_id(state))
     start = time.time()
     embedding = embed_texts([state["raw_clause"]])[0]
     metrics_collector.record_embedding_latency(time.time() - start)
@@ -103,7 +110,7 @@ Clause to analyze:
 
 
 def extractor_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering extractor stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "extractor", _thread_id(state))
     prompt = EXTRACTION_PROMPT.format(clause_text=state["raw_clause"])
 
     start = time.time()
@@ -173,7 +180,7 @@ class ExtractedObligation(BaseModel):
 
 
 def validation_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering validation stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "validation", _thread_id(state))
     extracted = state.get("extracted_obligation")
     errors = []
     warnings = []
@@ -249,7 +256,7 @@ def _normalize(text: str) -> str:
 
 
 def differ_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering differ stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "differ", _thread_id(state))
     client = get_client()
     ensure_collection(client, vector_size=len(state["embedding"]))
     
@@ -341,7 +348,7 @@ def differ_node(state: ComplianceState) -> dict:
 
 
 def mapper_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering mapper stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "mapper", _thread_id(state))
     if state.get("human_decision") == "reject" or state.get("diff_status") == "unchanged":
         return {}
 
@@ -443,7 +450,7 @@ def mapper_node(state: ComplianceState) -> dict:
 
 
 def evidence_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering evidence check stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "evidence check", _thread_id(state))
     task_info = state.get("task")
     if not task_info:
         return {"evidence_status": "missing"}
@@ -461,7 +468,7 @@ def evidence_node(state: ComplianceState) -> dict:
 
 
 def gap_engine_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering gap engine stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "gap engine", _thread_id(state))
     task_info = state.get("task")
     if not task_info:
         return {}
@@ -535,7 +542,7 @@ def generate_text_diff(old_text: str, new_text: str) -> str:
 
 
 def human_review_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Entering human review stage for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "human review", _thread_id(state))
     prev_text = None
     similarity_match = state.get("similarity_match")
     if similarity_match:
@@ -606,7 +613,7 @@ def human_review_node(state: ComplianceState) -> dict:
             review_item.extracted_obligation = extracted_obligation
             db.commit()
     except Exception as e:
-        print(f"[WARNING] Failed to update ReviewQueue status: {e}")
+        logger.warning("Failed to update ReviewQueue status for %s: %s", thread_id, e)
     finally:
         db.close()
 
@@ -624,7 +631,7 @@ def human_review_node(state: ComplianceState) -> dict:
 
 
 def finalize_node(state: ComplianceState) -> dict:
-    print(f"[PIPELINE] Finalizing pipeline for clause {state.get('clause_id')}...")
+    logger.info("stage=%s thread=%s", "finalize", _thread_id(state))
     _write_audit_entry(
         thread_id=f"{state['circular_id']}:{state['clause_id']}",
         node_name="finalize",
