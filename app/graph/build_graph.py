@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import ExitStack
 
@@ -7,8 +8,14 @@ from langgraph.graph import END, StateGraph
 from . import nodes
 from .state import ComplianceState
 
+logger = logging.getLogger(__name__)
+
 _exit_stack = ExitStack()
 _checkpointer = None
+
+
+def _allow_memory_fallback() -> bool:
+    return os.environ.get("ALLOW_MEMORY_CHECKPOINTER", "").lower() in ("1", "true", "yes")
 
 
 def _get_checkpointer():
@@ -19,6 +26,10 @@ def _get_checkpointer():
         )
         if conn_string.startswith("sqlite"):
             from langgraph.checkpoint.memory import MemorySaver
+            logger.warning(
+                "SQLite DATABASE_URL: using in-memory LangGraph checkpointer; "
+                "paused human-review runs will NOT survive a restart."
+            )
             _checkpointer = MemorySaver()
         else:
             try:
@@ -27,7 +38,16 @@ def _get_checkpointer():
                 )
                 _checkpointer.setup()
             except Exception:
+                logger.exception("Failed to initialise the Postgres LangGraph checkpointer")
+                if not _allow_memory_fallback():
+                    # A silent in-memory fallback would lose every paused
+                    # human-review run on restart; refuse to start instead.
+                    raise
                 from langgraph.checkpoint.memory import MemorySaver
+                logger.error(
+                    "ALLOW_MEMORY_CHECKPOINTER is set: falling back to an in-memory "
+                    "checkpointer. Paused reviews will be lost on restart."
+                )
                 _checkpointer = MemorySaver()
     return _checkpointer
 
@@ -39,14 +59,22 @@ def route_after_validation(state: ComplianceState) -> str:
     return "differ"
 
 
+# Routing thresholds. Anything below these goes to a human reviewer.
+EXTRACTION_CONFIDENCE_MIN = 0.8  # LLM's self-reported overall extraction confidence
+PARSE_CONFIDENCE_MIN = 0.7       # PDF parser's confidence in the clause boundary/text
+
+
+def _below(value, threshold: float) -> bool:
+    """True when value is a number under threshold; a missing/None score never triggers."""
+    return value is not None and value < threshold
+
+
 def route_after_diff(state: ComplianceState) -> str:
-    # V2 Feature 3: Route to review if validation failed or confidence < 80%
     if state.get("validation_status") == "failed":
         return "human_review"
-    if state.get("overall_confidence", 1.0) < 0.8:
+    if _below(state.get("overall_confidence"), EXTRACTION_CONFIDENCE_MIN):
         return "human_review"
-        
-    if state.get("confidence", 1.0) < 0.7:
+    if _below(state.get("confidence"), PARSE_CONFIDENCE_MIN):
         return "human_review"
     if state["diff_status"] in ("amended", "superseded"):
         return "human_review"
