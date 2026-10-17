@@ -17,15 +17,24 @@ def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
 
-def create_job(db: Session, *, filename: str, circular_id: str, total: int) -> UploadJob:
+def create_job(db: Session, *, filename: str, circular_id: str, total: int) -> str:
+    """Insert a queued job and return its id.
+
+    The id is read before the commit and the session's transaction is closed afterwards:
+    touching an expired ORM attribute after commit would silently start a new transaction
+    that stays open for the rest of the request (including the background job), and an
+    open transaction blocks LangGraph's ``CREATE INDEX CONCURRENTLY`` in checkpointer setup.
+    """
     job = UploadJob(
         id=str(uuid.uuid4()), filename=filename, circular_id=circular_id,
         status=QUEUED, total_clauses=total, processed_clauses=0,
         created_at=_now(), updated_at=_now(),
     )
+    job_id = job.id
     db.add(job)
     db.commit()
-    return job
+    db.close()
+    return job_id
 
 
 def job_to_dict(job: UploadJob) -> dict:

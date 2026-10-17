@@ -26,6 +26,7 @@ from app.api.routes_workflow import router as workflow_router
 from app.api.security import cors_origins, read_upload, require_api_key, safe_filename
 from app.db.database import SessionLocal, get_db
 from app.db.migrate import run_migrations
+from app.graph.build_graph import init_checkpointer
 import app.db.models  # noqa: F401
 import time
 from app.services.metrics import metrics_collector
@@ -52,6 +53,9 @@ from app.services.workflow_state import WorkflowState, get_state, advance
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     run_migrations()
+    # Set up the checkpointer before serving: its first-time setup issues CREATE INDEX
+    # CONCURRENTLY, which stalls behind any open transaction, and a bad DB should stop startup.
+    init_checkpointer()
     fail_interrupted_jobs(SessionLocal)
     yield
 
@@ -182,17 +186,17 @@ def upload_circular(
                 status_code=500, detail=f"Lineage DB pre-population failed: {exc}"
             ) from exc
 
-    job = create_job(db, filename=filename, circular_id=circular_id, total=len(chunks))
-    background_tasks.add_task(run_job, SessionLocal, job.id, filename, circular_id, chunks)
+    job_id = create_job(db, filename=filename, circular_id=circular_id, total=len(chunks))
+    background_tasks.add_task(run_job, SessionLocal, job_id, filename, circular_id, chunks)
     return JSONResponse(
         status_code=202,
         content={
             "status": "accepted",
-            "job_id": job.id,
+            "job_id": job_id,
             "circular_id": circular_id,
             "filename": filename,
             "clauses_total": len(chunks),
-            "poll_url": f"/jobs/{job.id}",
+            "poll_url": f"/jobs/{job_id}",
         },
     )
 

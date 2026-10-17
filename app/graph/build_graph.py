@@ -52,6 +52,11 @@ def _get_checkpointer():
     return _checkpointer
 
 
+def init_checkpointer():
+    """Create the shared checkpointer now (called at API startup) and return it."""
+    return _get_checkpointer()
+
+
 def route_after_validation(state: ComplianceState) -> str:
     if state.get("validation_status") == "failed":
         if (state.get("extraction_retries") or 0) <= 1:
