@@ -50,7 +50,7 @@ def test_differ_node_returns_unchanged_when_match_is_identical_text():
         patch("app.graph.nodes.get_client", return_value="fake-client"),
         patch("app.graph.nodes.ensure_collection"),
         patch("app.graph.nodes.search", return_value=[hit]),
-        patch("app.graph.nodes.Groq") as mock_groq,
+        patch("app.llm.groq_client.Groq") as mock_groq,
         patch("app.graph.nodes._write_audit_entry") as mock_audit,
     ):
         mock_client = MagicMock()
@@ -82,7 +82,7 @@ def test_differ_node_returns_amended_when_match_has_different_text():
         patch("app.graph.nodes.get_client", return_value="fake-client"),
         patch("app.graph.nodes.ensure_collection"),
         patch("app.graph.nodes.search", return_value=[hit]),
-        patch("app.graph.nodes.Groq") as mock_groq,
+        patch("app.llm.groq_client.Groq") as mock_groq,
         patch("app.graph.nodes._write_audit_entry") as mock_audit,
     ):
         mock_client = MagicMock()
@@ -114,7 +114,7 @@ def test_differ_node_returns_new_when_score_below_threshold():
         patch("app.graph.nodes.get_client", return_value="fake-client"),
         patch("app.graph.nodes.ensure_collection"),
         patch("app.graph.nodes.search", return_value=[hit]),
-        patch("app.graph.nodes.Groq") as mock_groq,
+        patch("app.llm.groq_client.Groq") as mock_groq,
         patch("app.graph.nodes._write_audit_entry") as mock_audit,
     ):
         mock_client = MagicMock()

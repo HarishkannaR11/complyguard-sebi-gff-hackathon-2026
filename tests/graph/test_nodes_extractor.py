@@ -17,7 +17,7 @@ def test_extractor_node_parses_json_response(monkeypatch):
         '{"requirement": "Appoint a compliance officer", "frequency": "one-time", '
         '"evidence_type": "board resolution", "deadline_rule": "2026-06-30"}'
     )
-    with patch("app.graph.nodes.Groq") as mock_groq_cls:
+    with patch("app.llm.groq_client.Groq") as mock_groq_cls:
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = fake_response
         mock_groq_cls.return_value = mock_client
@@ -40,7 +40,7 @@ def test_extractor_node_strips_markdown_code_fences(monkeypatch):
         '```json\n{"requirement": "Do X", "frequency": "annual", '
         '"evidence_type": "policy doc", "deadline_rule": "annual"}\n```'
     )
-    with patch("app.graph.nodes.Groq") as mock_groq_cls:
+    with patch("app.llm.groq_client.Groq") as mock_groq_cls:
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = fake_response
         mock_groq_cls.return_value = mock_client

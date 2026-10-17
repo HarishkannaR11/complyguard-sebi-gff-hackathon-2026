@@ -10,7 +10,6 @@ import time
 import threading
 import re
 
-from groq import APIConnectionError, Groq
 from langgraph.types import interrupt
 
 _audit_lock = threading.Lock()
@@ -37,6 +36,8 @@ def parse_json_robust(content: str) -> dict:
 from app.db.database import SessionLocal
 from app.db.models import AuditTrail, EvidenceLog, Obligation, Task, Circular, Section, Clause, Evidence, Deadline, ApplicableEntity, ReviewQueue
 from app.embeddings.embedder import embed_texts
+from app.llm.groq_client import chat_completion
+from app.services.audit import compute_audit_hash  # noqa: F401  (re-exported)
 from app.embeddings.qdrant_client import ensure_collection, get_client, search, upsert_chunks
 from app.services.metrics import metrics_collector
 
@@ -77,14 +78,6 @@ def resolve_due_date(deadline_rule: str | None, today: date) -> date | None:
     return today + timedelta(days=days)
 
 
-def compute_audit_hash(prev_hash: str, action: dict, timestamp: datetime) -> str:
-    payload = prev_hash + json.dumps(action, sort_keys=True) + timestamp.isoformat()
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-MAX_RETRIES = 3
-
 EXTRACTION_PROMPT = """
 You are a regulatory compliance AI. Read the SEBI circular clause below and extract
 the single compliance obligation it imposes.
@@ -111,31 +104,12 @@ Clause to analyze:
 
 def extractor_node(state: ComplianceState) -> dict:
     print(f"[PIPELINE] Entering extractor stage for clause {state.get('clause_id')}...")
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY environment variable is not set")
-
-    client = Groq(api_key=api_key)
     prompt = EXTRACTION_PROMPT.format(clause_text=state["raw_clause"])
 
-    response = None
     start = time.time()
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = client.chat.completions.create(
-                model=GROQ_MODEL,
-                temperature=0,
-                max_tokens=800,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            break
-        except APIConnectionError:
-            if attempt == MAX_RETRIES - 1:
-                raise
-            time.sleep(1.5 * (attempt + 1))
+    content = chat_completion(prompt)
     metrics_collector.record_llm_latency(time.time() - start)
 
-    content = response.choices[0].message.content
     obligation = parse_json_robust(content)
     return {"extracted_obligation": obligation}
 
@@ -304,34 +278,15 @@ def differ_node(state: ComplianceState) -> dict:
         candidates_text += f"\nCandidate {idx+1} [Score: {score:.3f}]:\n- Obligation ID: {obligation_id}\n- Clause ID: {clause_id}\n- Text: {text}\n"
 
     # Stage 2: Compare using LLM
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY environment variable is not set")
-
-    client_groq = Groq(api_key=api_key)
     prompt = COMPARISON_PROMPT.format(
         candidates_text=candidates_text,
         new_clause_text=state["raw_clause"]
     )
-    
-    response = None
+
     start_llm = time.time()
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = client_groq.chat.completions.create(
-                model=GROQ_MODEL,
-                temperature=0,
-                max_tokens=800,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            break
-        except APIConnectionError:
-            if attempt == MAX_RETRIES - 1:
-                raise
-            time.sleep(1.5 * (attempt + 1))
+    content = chat_completion(prompt)
     metrics_collector.record_llm_latency(time.time() - start_llm)
-            
-    content = response.choices[0].message.content
+
     comparison = parse_json_robust(content)
     
     status_upper = comparison.get("status", "NEW").upper()
