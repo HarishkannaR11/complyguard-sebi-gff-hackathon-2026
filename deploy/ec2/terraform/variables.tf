@@ -29,7 +29,7 @@ variable "data_volume_gb" {
 }
 
 variable "subnet_id" {
-  description = "Subnet to launch into. Empty = the first subnet of the default VPC."
+  description = "Existing PUBLIC subnet to launch into (its route table must send 0.0.0.0/0 to an internet gateway). Empty = the first subnet of the account's default VPC, which must exist."
   type        = string
   default     = ""
 }

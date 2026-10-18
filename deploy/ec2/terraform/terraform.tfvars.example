@@ -17,5 +17,9 @@ repo_url    = "https://github.com/harishkannar11/complyguard-sebi-gff-hackathon-
 repo_branch = "main"
 # github_token = "ghp_..."   # only if the repo is private
 
+# No default VPC in the account (and you cannot create one)? Use an existing PUBLIC subnet:
+# aws ec2 describe-subnets --region ap-south-1 --query 'Subnets[].[SubnetId,VpcId,MapPublicIpOnLaunch,AvailabilityZone]' --output table
+# subnet_id = "subnet-0123456789abcdef0"
+
 # Restrict who can reach the site (default: anyone)
 # allowed_cidrs = ["203.0.113.0/24"]

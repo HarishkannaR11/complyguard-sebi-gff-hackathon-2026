@@ -19,16 +19,22 @@ locals {
   site_address = var.domain_name != "" ? var.domain_name : ":80"
 }
 
-# ── Network: the account's default VPC, to keep the single-host stack minimal ────────────────
+# ── Network ──────────────────────────────────────────────────────────────────────────────────
+# Default: the first subnet of the account's default VPC. If the account has none (and an
+# organisation policy may forbid creating one), set var.subnet_id to an existing PUBLIC subnet --
+# one whose route table sends 0.0.0.0/0 to an internet gateway. The VPC is taken from the subnet.
 
 data "aws_vpc" "default" {
+  count   = var.subnet_id == "" ? 1 : 0
   default = true
 }
 
 data "aws_subnets" "default" {
+  count = var.subnet_id == "" ? 1 : 0
+
   filter {
     name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
+    values = [data.aws_vpc.default[0].id]
   }
   filter {
     name   = "default-for-az"
@@ -37,11 +43,15 @@ data "aws_subnets" "default" {
 }
 
 locals {
-  subnet_id = var.subnet_id != "" ? var.subnet_id : sort(data.aws_subnets.default.ids)[0]
+  subnet_id = var.subnet_id != "" ? var.subnet_id : sort(data.aws_subnets.default[0].ids)[0]
 }
 
 data "aws_subnet" "selected" {
   id = local.subnet_id
+}
+
+locals {
+  vpc_id = data.aws_subnet.selected.vpc_id
 }
 
 # Latest Amazon Linux 2023 (ships the SSM agent and AWS CLI v2).
@@ -52,7 +62,7 @@ data "aws_ssm_parameter" "al2023" {
 resource "aws_security_group" "app" {
   name_prefix = "${var.name}-app-"
   description = "RegOps web (80/443); everything else closed"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description = "HTTP (redirects to HTTPS when a domain is set)"

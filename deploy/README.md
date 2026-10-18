@@ -49,6 +49,8 @@ Then open `terraform output app_url`. With `domain_name` set, point its A record
   SSM Parameter Store, rebuilds, restarts, waits for health).
 * **Where data lives:** a separate encrypted EBS volume mounted at `/data` holds all of Docker (images,
   Postgres, Qdrant, uploads). It survives instance replacement and is snapshotted daily (`snapshot_retention_days`).
+* **No default VPC?** The stack uses the account's default VPC unless you set `subnet_id` to an existing public subnet
+  (route `0.0.0.0/0` to an internet gateway). Organisation policies (SCPs) can forbid creating a default VPC.
 * **Manual run without Terraform:** `cd deploy/ec2 && cp env.example .env && docker compose -f docker-compose.prod.yml up -d --build`.
 * Secrets are in SSM Parameter Store, not in user-data. They are in Terraform state; protect it.
 
