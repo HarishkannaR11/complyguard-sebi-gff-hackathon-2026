@@ -1,3 +1,14 @@
+{
+	# Let's Encrypt's newer certificate chains are not yet trusted by every browser/OS (older
+	# Windows trust stores in particular show ERR_CERT_AUTHORITY_INVALID). Prefer the chain rooted
+	# at the long-trusted ISRG Root X1 when the CA offers one; otherwise Caddy uses the default.
+	cert_issuer acme {
+		preferred_chains {
+			root_common_name "ISRG Root X1"
+		}
+	}
+}
+
 # SITE_ADDRESS comes from the environment: a domain name enables automatic HTTPS,
 # the default ":80" serves plain HTTP.
 {$SITE_ADDRESS::80} {
