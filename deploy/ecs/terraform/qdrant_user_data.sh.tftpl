@@ -1,0 +1,50 @@
+#!/bin/bash
+# Qdrant host bootstrap (Amazon Linux 2023). Rendered by Terraform; log: /var/log/qdrant-bootstrap.log
+# NOTE: Terraform template -- avoid the dollar-brace and percent-brace sequences; use plain $VAR.
+set -euo pipefail
+exec > >(tee -a /var/log/qdrant-bootstrap.log) 2>&1
+
+VOLUME_ID="${volume_id_nodash}"
+
+# Wait for the data volume, format it only if blank, mount at /data.
+DEV=""
+for i in $(seq 1 90); do
+  DEV=$(ls /dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_"$VOLUME_ID"* 2>/dev/null | head -n1 || true)
+  [ -n "$DEV" ] && break
+  sleep 5
+done
+[ -n "$DEV" ] || { echo "data volume $VOLUME_ID never appeared"; exit 1; }
+if ! blkid "$DEV" >/dev/null 2>&1; then
+  mkfs.xfs -L qdrant-data "$DEV"
+fi
+mkdir -p /data
+UUID=$(blkid -s UUID -o value "$DEV")
+grep -q "$UUID" /etc/fstab || echo "UUID=$UUID /data xfs defaults,nofail 0 2" >> /etc/fstab
+mount -a
+mountpoint -q /data
+mkdir -p /data/qdrant
+
+dnf install -y docker
+# Never start Docker (and so Qdrant) before /data is mounted.
+mkdir -p /etc/systemd/system/docker.service.d
+cat > /etc/systemd/system/docker.service.d/10-data-mount.conf <<'UNIT'
+[Unit]
+RequiresMountsFor=/data
+UNIT
+systemctl daemon-reload
+systemctl enable --now docker
+
+# Pinned to a minor version compatible with the app's qdrant-client 1.18.
+docker rm -f qdrant 2>/dev/null || true
+docker run -d --name qdrant --restart unless-stopped \
+  -p 6333:6333 \
+  -v /data/qdrant:/qdrant/storage \
+  qdrant/qdrant:v1.19.2
+
+# Wait until it answers.
+for i in $(seq 1 30); do
+  curl -fsS http://127.0.0.1:6333/readyz >/dev/null && { echo "qdrant ready"; exit 0; }
+  sleep 2
+done
+echo "qdrant did not become ready"
+exit 1

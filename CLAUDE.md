@@ -161,7 +161,7 @@ reports the first tampered, missing or forked entry.
 Single collection `circular_clauses`, 768-dim (`BAAI/bge-base-en-v1.5`), cosine. Payload: `text`,
 `circular_id`, `clause_id`, `obligation_id`. `get_client()` returns one cached client per URL. If a *local*
 server is unreachable it falls back to an embedded `./qdrant_db` store — with an error log, re-probing
-every 30 s, and `/health` reporting `degraded`. `QDRANT_URL=":memory:"` gives an in-memory store.
+every 30 s, and `/health` reporting `degraded`. `QDRANT_URL=":memory:"` gives an in-memory store. A remote server gets `QDRANT_API_KEY` if set (Qdrant Cloud).
 `app/services/sources.py` resolves an obligation's source (circular, section, clause no., page, text) from
 Postgres first; Qdrant is only a fallback.
 
@@ -173,7 +173,8 @@ responses, exponential backoff with jitter on connection errors / timeouts / 429
 
 ### API
 
-`app/api/main.py`: `/health` (public), `/readiness`, `POST /upload`, `GET /jobs/{id}`,
+`app/api/main.py`: `/livez` (public, shallow — use for load-balancer/container health) and `/health` (public, deep:
+Postgres + Qdrant, 503 if down), `/readiness`, `POST /upload`, `GET /jobs/{id}`,
 `POST /import/obligations` (company CSV), `/gaps`, `/gaps/legacy`, `/obligations`, `/company-obligations`,
 `/evidence`, `/audit_log`, `/audit_log/verify`, `POST /admin/reconcile-vectors?fix=true|false`, `/metrics`.
 `routes_review.py`: `/review/queue`, `/review/analytics`, `POST /review/{thread_id}/submit|decision`.
@@ -196,6 +197,17 @@ Labelled extraction (24) and diff (16) cases plus a runner that reports per-fiel
 precision/recall, and a confidence-threshold sweep. Cases are synthetic. Scoring is pure and unit-tested in
 `tests/evals`; the live run needs `GROQ_API_KEY` and the embedding model.
 
+### Deployment (`deploy/`, `Dockerfile`, `frontend/Dockerfile`)
+
+Full guide: `deploy/README.md`. Two Terraform stacks: `deploy/ec2` (one host, Docker Compose + Caddy, EBS data
+volume with daily snapshots, secrets in SSM Parameter Store) and `deploy/ecs` (CloudFront → ALB → Fargate, RDS,
+Qdrant on a private EC2, S3 frontend, Secrets Manager; `deploy/ecs/deploy.sh` does build/push/apply/publish).
+Rules baked into both: **one API instance only** (audit-chain lock and upload jobs are per process; ECS deploys
+stop-then-start and `api_desired_count` is validated to 0/1), the embedding model is baked into the API image
+(`HF_HUB_OFFLINE=1` at runtime), the frontend talks to the API same-origin at `/api` (the proxy strips the
+prefix), `VITE_API_KEY` is public by construction. CI's `infra` job runs `terraform fmt/validate`, compose,
+Caddyfile and Dockerfile checks. Terraform has never been applied against a real AWS account by the authors.
+
 ### Frontend (`frontend/src`)
 
 React 19 + Vite + Tailwind 4, no router — `App.jsx` switches between views in `components/views/` via local
@@ -215,7 +227,7 @@ latest hardening pass (no API key / model download in their environment) — run
 - Graph nodes are plain functions `(state: ComplianceState) -> dict` returning only the keys they change.
   Never mutate `state` in place.
 - Env vars (`DATABASE_URL`, `QDRANT_URL`, `GROQ_*`, `API_KEYS`, `CORS_ORIGINS`, `MAX_UPLOAD_MB`, `LOG_LEVEL`,
-  `ALLOW_MEMORY_CHECKPOINTER`) are read at the point of use with fallbacks matching `docker-compose.yml`.
+  `ALLOW_MEMORY_CHECKPOINTER`, `QDRANT_API_KEY`) are read at the point of use with fallbacks matching `docker-compose.yml`.
   `.env` must be loaded (`load_dotenv()` in `app/api/main.py`) *before* `app.db.database` is imported.
 - The LangGraph checkpointer **fails startup** if Postgres is unreachable; the in-memory fallback is only for
   SQLite URLs or an explicit `ALLOW_MEMORY_CHECKPOINTER=1`.

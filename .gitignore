@@ -51,3 +51,12 @@ qdrant_db/
 glow.tar.gz
 data/raw_pdfs/*
 !data/raw_pdfs/.gitkeep
+
+# Deployment: secrets and local state never get committed
+deploy/**/.env
+*.tfvars
+!*.tfvars.example
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log

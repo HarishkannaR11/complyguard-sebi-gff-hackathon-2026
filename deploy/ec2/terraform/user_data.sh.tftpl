@@ -1,0 +1,134 @@
+#!/bin/bash
+# RegOps AI first-boot bootstrap for Amazon Linux 2023. Rendered by Terraform.
+# Progress log: /var/log/regops-bootstrap.log
+#
+# NOTE: this file is a Terraform template -- do not use the dollar-brace or percent-brace
+# sequences in the bash below (use plain $VAR).
+set -euo pipefail
+exec > >(tee -a /var/log/regops-bootstrap.log) 2>&1
+echo "== regops bootstrap start $(date -u +%FT%TZ)"
+
+# Non-secret settings, shared with redeploy.sh.
+mkdir -p /opt/regops
+cat > /opt/regops/bootstrap.env <<'SETTINGS'
+REGION="${region}"
+PREFIX="${ssm_prefix}"
+REPO_URL="${repo_url}"
+BRANCH="${repo_branch}"
+SITE_ADDRESS="${site_address}"
+SETTINGS
+VOLUME_ID="${volume_id_nodash}"
+
+# ── 1. Persistent data volume -> /data ──────────────────────────────────────────────────────
+DEV=""
+for i in $(seq 1 90); do
+  DEV=$(ls /dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_"$VOLUME_ID"* 2>/dev/null | head -n1 || true)
+  [ -n "$DEV" ] && break
+  sleep 5
+done
+[ -n "$DEV" ] || { echo "data volume $VOLUME_ID never appeared"; exit 1; }
+
+# Format only a blank disk -- never one that already holds data (re-attached after a rebuild).
+if ! blkid "$DEV" >/dev/null 2>&1; then
+  mkfs.xfs -L regops-data "$DEV"
+fi
+mkdir -p /data
+UUID=$(blkid -s UUID -o value "$DEV")
+grep -q "$UUID" /etc/fstab || echo "UUID=$UUID /data xfs defaults,nofail 0 2" >> /etc/fstab
+mount -a
+mountpoint -q /data
+
+# ── 2. A little swap: the image build briefly needs more than a quiet box does ──────────────
+if [ ! -f /swapfile ]; then
+  dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  chmod 600 /swapfile
+  mkswap /swapfile >/dev/null
+  swapon /swapfile
+  echo "/swapfile none swap sw 0 0" >> /etc/fstab
+fi
+
+# ── 3. Docker, with all of its state (images, volumes) on the data volume ───────────────────
+dnf install -y docker git
+mkdir -p /etc/docker /data/docker
+cat > /etc/docker/daemon.json <<'JSON'
+{
+  "data-root": "/data/docker",
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" }
+}
+JSON
+# Never start Docker before /data is mounted, or it would silently fill the root disk.
+mkdir -p /etc/systemd/system/docker.service.d
+cat > /etc/systemd/system/docker.service.d/10-data-mount.conf <<'UNIT'
+[Unit]
+RequiresMountsFor=/data
+UNIT
+systemctl daemon-reload
+systemctl enable --now docker
+
+PLUGINS=/usr/local/lib/docker/cli-plugins
+mkdir -p $PLUGINS
+curl -fsSL -o $PLUGINS/docker-compose https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64
+curl -fsSL -o $PLUGINS/docker-buildx https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64
+chmod +x $PLUGINS/docker-compose $PLUGINS/docker-buildx
+docker compose version
+docker buildx version
+
+# ── 4. redeploy.sh: refresh secrets, pull code, rebuild, restart. Safe to re-run any time. ──
+cat > /opt/regops/redeploy.sh <<'REDEPLOY'
+#!/bin/bash
+set -euo pipefail
+source /opt/regops/bootstrap.env
+APP_DIR=/opt/regops/app
+ENV_FILE=$APP_DIR/deploy/ec2/.env
+
+get() {
+  aws ssm get-parameter --region "$REGION" --name "$PREFIX/$1" --with-decryption \
+    --query Parameter.Value --output text 2>/dev/null || true
+}
+
+# Code (a token is only needed for a private repository)
+TOKEN=$(get GITHUB_TOKEN)
+CLONE_URL="$REPO_URL"
+if [ -n "$TOKEN" ]; then
+  CLONE_URL=$(echo "$REPO_URL" | sed "s#^https://#https://x-access-token:$TOKEN@#")
+fi
+if [ -d "$APP_DIR/.git" ]; then
+  git -C "$APP_DIR" remote set-url origin "$CLONE_URL"
+  git -C "$APP_DIR" fetch --depth 1 origin "$BRANCH"
+  git -C "$APP_DIR" checkout -B "$BRANCH" FETCH_HEAD
+else
+  git clone --depth 1 --branch "$BRANCH" "$CLONE_URL" "$APP_DIR"
+fi
+git -C "$APP_DIR" remote set-url origin "$REPO_URL"   # do not leave the token in .git/config
+
+# Secrets -> compose .env (root-only)
+umask 077
+{
+  echo "POSTGRES_PASSWORD='$(get POSTGRES_PASSWORD)'"
+  echo "GROQ_API_KEY='$(get GROQ_API_KEY)'"
+  echo "API_KEYS='$(get API_KEYS)'"
+  echo "VITE_API_KEY='$(get VITE_API_KEY)'"
+  echo "SITE_ADDRESS=$SITE_ADDRESS"
+} > "$ENV_FILE"
+
+cd "$APP_DIR/deploy/ec2"
+docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" up -d --build --remove-orphans
+docker image prune -f >/dev/null
+
+# Wait for the API to report healthy (migrations + checkpointer setup happen at its startup).
+CID=$(docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" ps -q api)
+for i in $(seq 1 60); do
+  STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$CID" 2>/dev/null || echo unknown)
+  echo "api health: $STATUS"
+  [ "$STATUS" = "healthy" ] && exit 0
+  sleep 5
+done
+echo "API did not become healthy; check: docker compose -f $APP_DIR/deploy/ec2/docker-compose.prod.yml logs api"
+exit 1
+REDEPLOY
+chmod 700 /opt/regops/redeploy.sh
+
+# ── 5. First deploy ─────────────────────────────────────────────────────────────────────────
+/opt/regops/redeploy.sh
+echo "== regops bootstrap complete $(date -u +%FT%TZ)"

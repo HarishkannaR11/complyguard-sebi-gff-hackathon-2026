@@ -84,6 +84,13 @@ app.include_router(workflow_router)
 # Health
 # ─────────────────────────────────────────────────────────────────────────────
 
+@app.get("/livez")
+def liveness():
+    """Process is up. For load-balancer / container health checks: unlike /health it does not
+    touch Postgres or Qdrant, so a dependency blip cannot get a healthy container killed."""
+    return {"status": "ok"}
+
+
 @app.get("/health")
 def health_check(db: Session = Depends(get_db)):
     health_status = {

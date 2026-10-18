@@ -1,0 +1,29 @@
+# VCS / editor / OS
+.git
+.github
+.vscode
+.idea
+.DS_Store
+
+# Python
+venv
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+
+# Local state and secrets -- never bake these into an image
+.env
+.env.*
+!.env.example
+qdrant_db
+data/raw_pdfs
+data/processed
+
+# Not needed at runtime
+tests
+docs
+deploy
+frontend
+*.md
+!requirements.txt

@@ -430,6 +430,14 @@ def test_api_key_required_when_configured(monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_livez_is_public_and_never_touches_dependencies(monkeypatch):
+    monkeypatch.setenv("API_KEYS", "s3cret:alice")
+    with patch("app.api.main.get_client", side_effect=AssertionError("must not be called")):
+        response = client.get("/livez")  # no get_db override: it must not need the database either
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_health_stays_public_when_auth_is_on(monkeypatch):
     monkeypatch.setenv("API_KEYS", "s3cret:alice")
     app.dependency_overrides[get_db] = _override_get_db_with_sqlite()

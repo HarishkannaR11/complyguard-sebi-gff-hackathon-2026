@@ -70,3 +70,47 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+
+  infra:
+    # Keeps the deployment files from rotting: Terraform formatting + validation for both stacks,
+    # the production compose file, the Caddyfile, and the Dockerfiles.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive deploy
+
+      - name: terraform validate (ec2)
+        working-directory: deploy/ec2/terraform
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: terraform validate (ecs)
+        working-directory: deploy/ecs/terraform
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: docker compose config
+        working-directory: deploy/ec2
+        run: POSTGRES_PASSWORD=x GROQ_API_KEY=x docker compose -f docker-compose.prod.yml config -q
+
+      - name: Caddyfile
+        working-directory: deploy/ec2
+        run: |
+          docker run --rm -e SITE_ADDRESS=example.com -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Dockerfile lint
+        run: |
+          docker build --check .
+          docker build --check frontend
+
+      - name: shell syntax
+        run: bash -n deploy/ecs/deploy.sh
