@@ -95,13 +95,21 @@ curl -s -H "X-API-Key: <key>" $APP_URL/api/audit_log/verify
 
 ## What was and was not tested
 
-**Verified (in a sandbox):** both Terraform stacks pass `terraform fmt` and `validate` against AWS provider 6.x
-with no dependency cycles; the user-data scripts render and parse (`bash -n`); the compose file (including its
-fail-fast on missing secrets) and the Caddyfile (domain and `:80` forms) validate; both Dockerfiles pass
-`docker build --check`; every step of the API image build up to the final layer ran (with torch from PyPI and
-without the model download), which is how the `chown /opt/hf` bug was found and fixed.
+**Verified (in a sandbox):**
+
+* Both Terraform stacks pass `terraform fmt` and `validate` against AWS provider 6.x with no dependency cycles.
+  The user-data scripts render and parse (`bash -n`).
+* The Dockerfiles lint clean and the API image builds. A test image (torch from PyPI, no embedding model) was
+  then run under the **real `docker-compose.prod.yml`** (Postgres 16, Qdrant v1.19.2, API, Caddy) and checked
+  through Caddy on port 80: the frontend and SPA fallback are served; `/api/*` reaches the API with the prefix
+  stripped; auth returns 401/401/200 for no/wrong/right key; `/api/livez` and `/api/health` report healthy; the
+  API runs as a non-root user; Alembic reaches revision 0002 and the LangGraph checkpoint tables are created at
+  startup; an upload runs as a background job that completes and can be polled; a non-PDF upload is rejected;
+  data and jobs survive `docker compose down` + `up`, and the second start applies no migrations.
+* The real build and run also found and fixed a Dockerfile bug (`chown` of a directory that did not exist).
 
 **Not verified:** `terraform plan/apply` against a real AWS account; the CPU-only torch wheel index
-(`download.pytorch.org` was blocked in the sandbox); baking the embedding model into the image (HuggingFace was
-blocked); running the built containers together under `docker-compose.prod.yml`; Let's Encrypt issuance; and a
-live Groq call. Run a first deploy in a throwaway account before relying on these files, and expect small fixes.
+(`download.pytorch.org` was blocked in the sandbox, so the sandbox build used PyPI's torch); baking the embedding
+model into the image (HuggingFace was blocked, so the test containers could not embed clauses and each clause
+failed with the expected offline-mode error); Let's Encrypt issuance; and a live Groq call. Run a first deploy in
+a throwaway account before relying on these files, and expect small fixes.
