@@ -1,0 +1,24 @@
+# SITE_ADDRESS comes from the environment: a domain name enables automatic HTTPS,
+# the default ":80" serves plain HTTP.
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# /api/* -> the FastAPI service, with the /api prefix stripped (its routes live at /).
+	handle_path /api/* {
+		reverse_proxy api:8000
+	}
+
+	# Everything else is the single-page frontend.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

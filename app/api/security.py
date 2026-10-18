@@ -37,8 +37,8 @@ def auth_enabled() -> bool:
     return bool(_load_api_keys())
 
 
-# Reachable without a key: load-balancer health probes and the interactive API docs.
-PUBLIC_PATHS = frozenset({"/health", "/docs", "/redoc", "/openapi.json"})
+# Reachable without a key: health probes (/livez shallow, /health deep) and the API docs.
+PUBLIC_PATHS = frozenset({"/livez", "/health", "/docs", "/redoc", "/openapi.json"})
 
 
 def require_api_key(request: Request, x_api_key: str | None = Header(default=None)) -> Principal:

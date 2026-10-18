@@ -79,7 +79,8 @@ def get_client(url: str | None = None) -> QdrantClient:
         elif q_url.startswith(("/", "./")):
             client = QdrantClient(path=q_url)
         else:
-            client = QdrantClient(url=q_url)
+            # A remote server (e.g. Qdrant Cloud) normally requires an API key.
+            client = QdrantClient(url=q_url, api_key=os.environ.get("QDRANT_API_KEY") or None)
         _clients[q_url] = client
         return client
 

@@ -126,3 +126,17 @@ def test_fallback_is_left_when_the_server_comes_back():
         assert qc.get_client("http://localhost:6333") is up
 
     assert not qc.is_using_fallback()
+
+
+def test_remote_server_gets_the_api_key_from_the_environment(monkeypatch):
+    monkeypatch.setenv("QDRANT_API_KEY", "secret-key")
+    with patch.object(qc, "QdrantClient") as cls:
+        qc.get_client("https://abc.cloud.qdrant.io:6333")
+    cls.assert_called_once_with(url="https://abc.cloud.qdrant.io:6333", api_key="secret-key")
+
+
+def test_remote_server_without_a_key_passes_none(monkeypatch):
+    monkeypatch.delenv("QDRANT_API_KEY", raising=False)
+    with patch.object(qc, "QdrantClient") as cls:
+        qc.get_client("http://qdrant.internal:6333")
+    cls.assert_called_once_with(url="http://qdrant.internal:6333", api_key=None)

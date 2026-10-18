@@ -1,0 +1,90 @@
+# Single-host production stack: Caddy (TLS + static frontend) -> API -> Postgres + Qdrant.
+#
+#   cd deploy/ec2
+#   cp env.example .env && $EDITOR .env
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Only Caddy publishes ports. Postgres, Qdrant and the API are reachable on the internal
+# network only. Run ONE api container -- do not use `--scale api=N` (see ../../Dockerfile).
+name: regops
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: regops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: regops
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U regops -d regops"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  qdrant:
+    # Pinned: the app uses qdrant-client 1.18, which supports servers one minor version apart.
+    image: qdrant/qdrant:v1.19.2
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: regops-api:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://regops:${POSTGRES_PASSWORD}@postgres:5432/regops
+      QDRANT_URL: http://qdrant:6333
+      GROQ_API_KEY: ${GROQ_API_KEY:?set GROQ_API_KEY in .env}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      # Comma-separated key:user pairs. Empty = auth OFF -- never leave it empty on the internet.
+      API_KEYS: ${API_KEYS:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # The embedding model is baked into the image; never call huggingface.co at runtime.
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      - uploads:/app/data/raw_pdfs
+
+  web:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}
+        # Compiled into the public JS bundle: readable by anyone who loads the site.
+        VITE_API_KEY: ${VITE_API_KEY:-}
+    image: regops-web:latest
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      # A domain name => Caddy gets and renews a Let's Encrypt certificate automatically.
+      # ":80" => plain HTTP (no domain / testing).
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  qdrant_data:
+  uploads:
+  caddy_data:
+  caddy_config:

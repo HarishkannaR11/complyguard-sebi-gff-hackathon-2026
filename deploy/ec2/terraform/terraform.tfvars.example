@@ -1,0 +1,21 @@
+# cp terraform.tfvars.example terraform.tfvars   (terraform.tfvars is git-ignored)
+
+region        = "ap-south-1"
+instance_type = "t3.large"
+
+# Required secrets
+groq_api_key = "gsk_..."
+api_keys     = "replace-with-long-random-key:alice"
+vite_api_key = "replace-with-long-random-key" # same as one of the api_keys; ends up in the public JS bundle
+
+# Optional: HTTPS on your own domain (point the A record at the public_ip output, or give a zone id)
+# domain_name     = "regops.example.com"
+# route53_zone_id = "Z0123456789ABC"
+
+# Code to deploy. The deploy/ files must exist on this branch.
+repo_url    = "https://github.com/harishkannar11/complyguard-sebi-gff-hackathon-2026.git"
+repo_branch = "main"
+# github_token = "ghp_..."   # only if the repo is private
+
+# Restrict who can reach the site (default: anyone)
+# allowed_cidrs = ["203.0.113.0/24"]

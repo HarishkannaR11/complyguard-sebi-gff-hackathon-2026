@@ -1,0 +1,23 @@
+# cp terraform.tfvars.example terraform.tfvars   (terraform.tfvars is git-ignored)
+
+region = "ap-south-1"
+name   = "regops"
+
+# Required secrets (kept in Secrets Manager; they also end up in Terraform state)
+groq_api_key = "gsk_..."
+api_keys     = "replace-with-long-random-key:alice"
+
+# Database: set to false only when you intend to tear the stack down
+# db_deletion_protection = false
+
+# Cheaper dev stack: one NAT gateway (default) and 1 AZ-wide RDS. For HA flip these:
+# single_nat_gateway = false
+# db_multi_az        = true
+
+# Use an existing Qdrant (e.g. Qdrant Cloud) instead of the EC2 instance:
+# qdrant_url     = "https://xyz.eu-central.aws.cloud.qdrant.io:6333"
+# qdrant_api_key = "..."
+
+# Encrypt the CloudFront -> ALB hop (needs a DNS name you control, CNAME'd to the alb_dns_name output):
+# alb_certificate_arn = "arn:aws:acm:ap-south-1:123456789012:certificate/..."
+# origin_domain_name  = "origin.example.com"
