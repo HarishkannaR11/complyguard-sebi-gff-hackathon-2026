@@ -23,3 +23,7 @@ repo_branch = "main"
 
 # Restrict who can reach the site (default: anyone)
 # allowed_cidrs = ["203.0.113.0/24"]
+
+# SCP blocks the public SSM AMI lookup? Pin an Amazon Linux 2023 x86_64 AMI for your region
+# (EC2 console > Launch instance shows the ID under "Amazon Linux 2023 AMI"):
+# ami_id = "ami-0123456789abcdef0"

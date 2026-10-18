@@ -34,6 +34,12 @@ variable "subnet_id" {
   default     = ""
 }
 
+variable "ami_id" {
+  description = "Amazon Linux 2023 x86_64 AMI ID to use. Empty = look up the latest through the public SSM parameter (needs ssm:GetParameter on /aws/service/*)."
+  type        = string
+  default     = ""
+}
+
 variable "allowed_cidrs" {
   description = "Who may reach ports 80/443. Narrow this (e.g. your office IP) for anything but a public demo."
   type        = list(string)

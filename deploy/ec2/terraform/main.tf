@@ -54,9 +54,10 @@ locals {
   vpc_id = data.aws_subnet.selected.vpc_id
 }
 
-# Latest Amazon Linux 2023 (ships the SSM agent and AWS CLI v2).
+# Latest Amazon Linux 2023 (ships the SSM agent and AWS CLI v2), unless var.ami_id pins one.
 data "aws_ssm_parameter" "al2023" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+  count = var.ami_id == "" ? 1 : 0
+  name  = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
 resource "aws_security_group" "app" {
@@ -217,7 +218,7 @@ resource "aws_eip" "app" {
 }
 
 resource "aws_instance" "app" {
-  ami                         = nonsensitive(data.aws_ssm_parameter.al2023.value)
+  ami                         = var.ami_id != "" ? var.ami_id : nonsensitive(data.aws_ssm_parameter.al2023[0].value)
   instance_type               = var.instance_type
   subnet_id                   = local.subnet_id
   vpc_security_group_ids      = [aws_security_group.app.id]
@@ -312,7 +313,7 @@ resource "aws_iam_role_policy_attachment" "dlm" {
 }
 
 resource "aws_dlm_lifecycle_policy" "data" {
-  description        = "${var.name}: daily snapshots of the data volume"
+  description        = "${var.name} daily snapshots of the data volume"
   execution_role_arn = aws_iam_role.dlm.arn
   state              = "ENABLED"
 
